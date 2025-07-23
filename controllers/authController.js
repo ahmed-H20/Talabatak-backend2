@@ -7,9 +7,9 @@ import bcrypt from 'bcryptjs';
 // Register a new user
 export const registerUser = async (req, res, next) => {
   try {
-    const { name, phone, password, location } = req.body;
+    const { name, phone, password, location , role } = req.body;
 
-    if (!name || !phone || !password || !location?.coordinates) {
+    if (!name || !phone || !password || !location?.coordinates || !role) {
       return res.status(400).json({ message: 'All fields are required' });
     }
 
@@ -29,6 +29,7 @@ export const registerUser = async (req, res, next) => {
       location,
       otpCode,
       otpExpiresAt,
+      role,
     });
 
     res.status(201).json({
