@@ -10,6 +10,7 @@ import {
   logoutUser,
 } from '../controllers/authController.js'
 import protectRoute from '../middlewares/protectRoute.js'
+import authorizeRoles from '../middlewares/authorizeRoles.js';
 
 const router = express.Router()
 
@@ -33,5 +34,11 @@ router.put("/reset-password", resetPassword);
 
 // @route   POST /api/users/logout
 router.post("/logout", logoutUser);
+
+
+router.get("/dashboard", protectRoute, authorizeRoles("admin"), (req, res) => {
+  res.status(200).json({ message: "Welcome to the admin dashboard!" });
+});
+
 
 export default router
