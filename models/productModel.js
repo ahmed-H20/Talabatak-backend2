@@ -33,21 +33,16 @@ const productSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Store",
     required: true,
-    // default: new mongoose.Types.ObjectId("store_id")  ← لو عايز تضيف قيمة افتراضية فعلًا، حط ID حقيقي للمتجر
   },
 
   category: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Category",
-    required: true,
-    default: () => new mongoose.Types.ObjectId("64b5fa6c76a7e6cc1c1f3f59"),
-    // default: new mongoose.Types.ObjectId("category_id")
   },
 
   subCategory: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "SubCategory",
-    // default: new mongoose.Types.ObjectId("subCategory_id")
   },
 
 }, { timestamps: true });

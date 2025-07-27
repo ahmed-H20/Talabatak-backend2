@@ -5,7 +5,7 @@ import asyncHandler from "../middlewares/asyncHandler.js"
 // @route   POST /api/products
 // @access  Private/Admin
 export const createProduct = asyncHandler(async (req, res) => {
-  const { name, description, price, quantity, store, subCategory } = req.body;
+  const { name, description, price, quantity, store, subCategory , category } = req.body;
 
   if (!name || !description || !price || !quantity || !store ) {
     throw new apiError("All required fields must be provided", 400);
@@ -17,7 +17,9 @@ export const createProduct = asyncHandler(async (req, res) => {
     price,
     quantity,
     store,
-    subCategory,
+    category: req.body.category, // Assuming category is also provided
+    subCategory: req.body.subCategory, // Assuming subCategory is also provided
+    discount: req.body.discount || 0, // Default to 0 if not provided
     images: req.body.images || [],
   });
 
@@ -33,6 +35,7 @@ export const createProduct = asyncHandler(async (req, res) => {
 export const getAllProducts = asyncHandler(async (req, res) => {
   const products = await Product.find()
     .populate("store", "name location") // populate store
+    .populate("category", "name") // populate category
     .populate("subCategory", "name"); // populate subCategory
 
   res.status(200).json({
