@@ -13,13 +13,13 @@ import authorizeRoles from "../middlewares/authorizeRoles.js";
 const router = express.Router();
 
 // Routes
-router.post("/", protectRoute, createOrdersFromCart);                   
-router.get("/", protectRoute, getMyOrders);      
-router.get("/all", protectRoute,authorizeRoles('admin'), getOrders);              
-router.patch("/:id/cancel", protectRoute, cancelOrderIfPending);       
-router.patch("/:id/status", protectRoute, updateOrderStatus);       
-router.patch("/:id/update", protectRoute, updateOrderIfPending);
 router.get("/grouped", protectRoute, getGroupedOrders);
+router.get("/all", protectRoute, authorizeRoles('admin'), getOrders);
+router.patch("/:id/cancel", protectRoute, cancelOrderIfPending);
+router.patch("/:id/status", protectRoute, updateOrderStatus);
+router.patch("/:id/update", protectRoute, updateOrderIfPending);
+router.post("/", protectRoute, createOrdersFromCart);
+router.get("/", protectRoute, getMyOrders);
 
 export default router;
 
