@@ -5,7 +5,7 @@ import {
   updateSubCategory,
   deleteSubCategory,
 } from "../controllers/subCategoryController.js"
-import protectRoute from "../middlewares/protectRoute.js";
+import {protectRoute} from "../middlewares/protectRoute.js";
 import authorizeRoles from "../middlewares/authorizeRoles.js";
 
 const router = express.Router()

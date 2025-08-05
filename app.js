@@ -8,6 +8,8 @@ import categoryRoutes from './routes/categoryRoutes.js';
 import subCategoryRoutes from './routes/subCategoryRoutes.js';
 import storeRoutes from './routes/storeRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
+import couponRoutes from './routes/couponRoutes.js';
+import cartRoutes from './routes/cartRoutes.js';
 
 dotenv.config();
 
@@ -27,5 +29,9 @@ app.use("/api/categories", categoryRoutes)
 app.use("/api/subcategories", subCategoryRoutes)
 app.use("/api/stores", storeRoutes)
 app.use("/api/orders", orderRoutes);
+app.use("/api/coupons", couponRoutes);
+app.use("/api/cart", cartRoutes);
+app.use('/uploads', express.static('uploads'));
+
 
 export default app;

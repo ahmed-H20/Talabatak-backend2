@@ -1,44 +1,40 @@
-// routes/authRoutes.js
-import express from 'express'
 import {
   registerUser,
   loginUser,
   getProfile,
   updateProfile,
   forgetPassword,
-  resetPassword,
   logoutUser,
-} from '../controllers/authController.js'
-import protectRoute from '../middlewares/protectRoute.js'
-import authorizeRoles from '../middlewares/authorizeRoles.js';
+  googleAuth,
+  facebookAuth,
+  completeSocialProfile
+} from '../controllers/authController.js';
+import User from '../models/userModel.js';
+import { protectRoute } from "../middlewares/protectRoute.js"
+import express from 'express'
 
 const router = express.Router()
 
-// @route   POST /api/users/register
-router.post("/register", registerUser);
-
-// @route   POST /api/users/login
-router.post("/login", loginUser);
-
-// @route   GET /api/users/profile
-router.get("/profile", protectRoute, getProfile);
-
-// @route   PUT /api/users/profile
-router.put("/profile", protectRoute, updateProfile);
-
-// @route   POST /api/users/forgot-password
-router.post("/forgot-password", forgetPassword);
-
-// @route   PUT /api/users/reset-password
-router.put("/reset-password", resetPassword);
-
-// @route   POST /api/users/logout
-router.post("/logout", logoutUser);
 
 
-router.get("/dashboard", protectRoute, authorizeRoles("admin"), (req, res) => {
-  res.status(200).json({ message: "Welcome to the admin dashboard!" });
-});
+// routes/authRoutes.js
+
+
+// Regular authentication routes
+router.post('/register', registerUser);
+router.post('/login', loginUser);
+router.post('/forget-password', forgetPassword);
+router.post('/logout', logoutUser);
+
+// Social authentication routes
+router.post('/google', googleAuth);
+router.post('/facebook', facebookAuth);
+router.post('/complete-social-profile', protectRoute, completeSocialProfile);
+
+// Protected routes
+router.get('/profile', protectRoute, getProfile);
+router.put('/profile', protectRoute, updateProfile);
+
 
 
 export default router

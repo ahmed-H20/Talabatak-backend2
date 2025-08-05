@@ -6,13 +6,16 @@ const dayTimeSchema = new mongoose.Schema({
     enum: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
     required: true
   },
-  from: {
+  open: {
     type: String, // e.g., "09:00"
     required: true
   },
-  to: {
+  close: {
     type: String, // e.g., "17:00"
     required: true
+  },
+  isClosed: {
+    type: Boolean
   }
 }, { _id: false });
 
@@ -32,9 +35,20 @@ const storeSchema = new mongoose.Schema({
       lng: { type: Number }
     }
   },
+  phone:{
+    type: String
+  },
+  products: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Product"
+  }],
   city: {
     type: String,
     required: true
+  },
+  discount: {
+    type: Number, 
+    default: 0,
   },
   deliveryRangeKm: {
     type: Number,
@@ -47,5 +61,5 @@ const storeSchema = new mongoose.Schema({
   workingHours: [dayTimeSchema],
 }, { timestamps: true });
 
-const Store = mongoose.model("Store", storeSchema);
+const Store = mongoose.models.Store || mongoose.model('Store', storeSchema);
 export default Store;

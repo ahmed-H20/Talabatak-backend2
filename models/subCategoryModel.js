@@ -11,6 +11,10 @@ const subCategorySchema = new mongoose.Schema({
     ref: "Category",
     required: true,
   },
+  image: {
+    type: String,
+    default: "",
+  }
 }, { timestamps: true });
 
 const SubCategory = mongoose.model("SubCategory", subCategorySchema);

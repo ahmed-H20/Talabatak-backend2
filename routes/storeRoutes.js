@@ -5,8 +5,9 @@ import {
   getSingleStore,
   updateStore,
   deleteStore,
+  getNearbyStores,
 } from "../controllers/storeController.js"
-import protectRoute from "../middlewares/protectRoute.js";
+import {protectRoute} from "../middlewares/protectRoute.js";
 import authorizeRoles from "../middlewares/authorizeRoles.js";
 
 const router = express.Router()
@@ -15,6 +16,9 @@ router
   .route("/")
   .post(protectRoute, authorizeRoles("admin"), createStore)
   .get(getAllStores)
+
+router.get('/nearby', getNearbyStores);
+
 
 router
   .route("/:id")

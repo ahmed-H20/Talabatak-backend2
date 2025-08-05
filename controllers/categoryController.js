@@ -1,11 +1,11 @@
 import Category from '../models/categoryModel.js';
-import SubCategory from '../models/subCategoryModel.js';
 import asyncHandler from "../middlewares/asyncHandler.js"
+import SubCategory from '../models/SubCategoryModel.js';
 
 // @desc Create new category
 export const createCategory = asyncHandler(async (req, res) => {
-  const { name } = req.body;
-  const newCategory = await Category.create({ name });
+  const { name, image } = req.body;
+  const newCategory = await Category.create({ name, image });
   res.status(201).json({ message: 'Category created', data: newCategory });
 });
 

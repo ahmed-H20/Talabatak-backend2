@@ -1,79 +1,242 @@
-// controllers/authController.js
+// controllers/authController.js - Add these methods to your existing controller
+
 import User from '../models/userModel.js';
 import generateToken from '../utils/generateToken.js';
 import { sanitizeUser } from '../utils/sanitize.js';
 import bcrypt from 'bcryptjs';
 
-// Register a new user
-export const registerUser = async (req, res, next) => {
+// Helper function to validate phone number (11 digits)
+const isValidPhone = (phone) => {
+  const phoneRegex = /^\d{11}$/;
+  return phoneRegex.test(phone);
+};
+
+// Generate a unique phone number for social users (temporary)
+const generateTempPhone = async () => {
+  let phone;
+  let exists = true;
+  
+  while (exists) {
+    // Generate a random 11-digit number starting with 05
+    phone = '05' + Math.floor(Math.random() * 1000000000).toString().padStart(9, '0');
+    exists = await User.findOne({ phone });
+  }
+  
+  return phone;
+};
+
+// Google Authentication
+export const googleAuth = async (req, res, next) => {
   try {
-    const { name, phone, password, location , role } = req.body;
+    const { providerId, name, email, photo } = req.body;
 
-    if (!name || !phone || !password || !location?.coordinates || !role) {
-      return res.status(400).json({ message: 'All fields are required' });
+    if (!providerId || !name || !email) {
+      return res.status(400).json({ message: 'Missing required Google data' });
     }
 
-    const userExists = await User.findOne({ phone });
-    if (userExists) {
-      return res.status(400).json({ message: 'User already exists' });
+    // Check if user exists with this Google ID
+    let user = await User.findOne({ 
+      $or: [
+        { providerId, provider: 'google' },
+        { email }
+      ]
+    });
+
+    if (user) {
+      // Existing user - log them in
+      const token = generateToken(user._id);
+      return res.status(200).json({
+        message: 'Login successful',
+        user: sanitizeUser(user),
+        token,
+        isNewUser: false
+      });
     }
 
-    // Generate OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // expires in 10 mins
-
-    const user = await User.create({
+    // New user - create account with temporary phone
+    const tempPhone = await generateTempPhone();
+    
+    user = await User.create({
       name,
-      phone,
-      password,
-      location,
-      otpCode,
-      otpExpiresAt,
-      role,
+      email,
+      phone: tempPhone,
+      password: 'social-auth-' + Math.random().toString(36), // Random password for social users
+      location: {
+        coordinates: [31.2357, 30.0444], // Default Cairo coordinates
+        address: 'غير محدد'
+      },
+      role: 'user', // Default role
+      provider: 'google',
+      providerId,
+      photo,
+      isPhoneVerified: false, // Will be verified when they complete profile
     });
 
+    const token = generateToken(user._id);
+    
     res.status(201).json({
-      message: 'User registered. Please verify your phone number.',
+      message: 'Account created with Google',
       user: sanitizeUser(user),
+      token,
+      isNewUser: true
     });
-
-    // You can log or send the OTP here (SMS API)
-    console.log(`OTP for ${phone}: ${otpCode}`);
   } catch (err) {
     next(err);
   }
 };
 
-// Verify phone number with OTP
-export const verifyPhone = async (req, res, next) => {
+// Facebook Authentication
+export const facebookAuth = async (req, res, next) => {
   try {
-    const { phone, otp } = req.body;
+    const { providerId, name, email, photo } = req.body;
 
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(400).json({ message: 'User not found' });
+    if (!providerId || !name) {
+      return res.status(400).json({ message: 'Missing required Facebook data' });
     }
 
-    if (user.isPhoneVerified) {
-      return res.status(400).json({ message: 'Phone number already verified' });
+    // Check if user exists with this Facebook ID or email
+    let user = await User.findOne({ 
+      $or: [
+        { providerId, provider: 'facebook' },
+        ...(email ? [{ email }] : [])
+      ]
+    });
+
+    if (user) {
+      // Existing user - log them in
+      const token = generateToken(user._id);
+      return res.status(200).json({
+        message: 'Login successful',
+        user: sanitizeUser(user),
+        token,
+        isNewUser: false
+      });
     }
 
-    if (
-      user.otpCode !== otp ||
-      !user.otpExpiresAt ||
-      user.otpExpiresAt < Date.now()
-    ) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
-    }
-
-    user.isPhoneVerified = true;
-    user.otpCode = undefined;
-    user.otpExpiresAt = undefined;
-    await user.save();
+    // New user - create account with temporary phone
+    const tempPhone = await generateTempPhone();
+    
+    user = await User.create({
+      name,
+      email: email || `fb_${providerId}@temp.com`,
+      phone: tempPhone,
+      password: 'social-auth-' + Math.random().toString(36), // Random password for social users
+      location: {
+        coordinates: [31.2357, 30.0444], // Default Cairo coordinates
+        address: 'غير محدد'
+      },
+      role: 'user', // Default role
+      provider: 'facebook',
+      providerId,
+      photo,
+      isPhoneVerified: false, // Will be verified when they complete profile
+    });
 
     const token = generateToken(user._id);
+    
+    res.status(201).json({
+      message: 'Account created with Facebook',
+      user: sanitizeUser(user),
+      token,
+      isNewUser: true
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Complete social profile for new social users
+export const completeSocialProfile = async (req, res, next) => {
+  try {
+    const { phone, address, role, location } = req.body;
+    const userId = req.user.id; // From auth middleware
+
+    if (!phone || !address || !role || !location?.coordinates) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+
+    // Validate phone number (11 digits)
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
+    }
+
+    // Check if phone is already taken by another user
+    const phoneExists = await User.findOne({ 
+      phone, 
+      _id: { $ne: userId } 
+    });
+    
+    if (phoneExists) {
+      return res.status(400).json({ message: 'Phone number already exists' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Update user profile
+    user.phone = phone;
+    user.location = {
+      coordinates: location.coordinates,
+      address: address
+    };
+    user.role = role;
+    user.isPhoneVerified = true; // Consider phone verified after completion
+
+    await user.save();
+
     res.status(200).json({
-      message: 'Phone verified successfully',
+      message: 'Profile completed successfully',
+      user: sanitizeUser(user)
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Regular registration (existing method updated)
+export const registerUser = async (req, res, next) => {
+  try {
+    const { name, phone, email, password, location, role } = req.body;
+
+    if (!name || !phone || !email || !password || !location || !role) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+
+    // Validate phone number (11 digits)
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
+    }
+
+    const userExists = await User.findOne({ 
+      $or: [{ phone }, { email }] 
+    });
+    
+    if (userExists) {
+      if (userExists.phone === phone) {
+        return res.status(400).json({ message: 'User with this phone number already exists' });
+      }
+      if (userExists.email === email) {
+        return res.status(400).json({ message: 'User with this email already exists' });
+      }
+    }
+
+    const user = await User.create({
+      name,
+      phone,
+      email,
+      password,
+      location,
+      role,
+      provider: 'local',
+      isPhoneVerified: true, // Set to true since we're not doing verification
+    });
+
+    const token = generateToken(user._id);
+    
+    res.status(201).json({
+      message: 'User registered successfully',
       user: sanitizeUser(user),
       token,
     });
@@ -82,52 +245,64 @@ export const verifyPhone = async (req, res, next) => {
   }
 };
 
-// Login user
+// Login user (existing method - no changes needed)
 export const loginUser = async (req, res, next) => {
   try {
-    const { phone, password } = req.body
+    const { phone, password } = req.body;
 
     if (!phone || !password) {
-      return res.status(400).json({ message: "Phone and password are required" })
+      return res.status(400).json({ message: "Phone and password are required" });
     }
 
-    const user = await User.findOne({ phone })
+    // Validate phone number format
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
+    }
+
+    const user = await User.findOne({ phone });
 
     if (!user) {
-      return res.status(401).json({ message: "Invalid phone or password" })
+      return res.status(401).json({ message: "Invalid phone or password" });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password)
+    // Check if this is a social user trying to login with password
+    if (user.provider !== 'local') {
+      return res.status(401).json({ 
+        message: `Please use ${user.provider} to sign in` 
+      });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ message: "Invalid phone or password" })
+      return res.status(401).json({ message: "Invalid phone or password" });
     }
 
-    const token = generateToken(user._id, res)
-    const sanitizedUser = sanitizeUser(user)
+    const token = generateToken(user._id, res);
+    const sanitizedUser = sanitizeUser(user);
 
     res.status(200).json({
       message: "Login successful",
       user: sanitizedUser,
       token
-    })
+    });
 
   } catch (error) {
-    next(error)
+    next(error);
   }
-}
+};
 
-// Get user profile BY token
+// Get user profile BY token (existing method - no changes needed)
 export const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id)
-    if (!user) return res.status(404).json({ message: 'User not found' })
-    res.status(200).json({ user: sanitizeUser(user) })
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.status(200).json({ user: sanitizeUser(user) });
   } catch (err) {
-    next(err)
+    next(err);
   }
-}
+};
 
-// Update user profile
+// Update user profile (existing method - no changes needed)
 export const updateProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
@@ -152,63 +327,42 @@ export const updateProfile = async (req, res, next) => {
   }
 };
 
-// Forget password and send OTP
+// Forget password - simplified without OTP (existing method updated)
 export const forgetPassword = async (req, res, next) => {
   try {
-    const { phone } = req.body;
+    const { phone, newPassword } = req.body;
+
+    if (!phone || !newPassword) {
+      return res.status(400).json({ message: "Phone and new password are required" });
+    }
+
+    // Validate phone number format
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
+    }
 
     const user = await User.findOne({ phone });
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-    user.otpCode = otpCode;
-    user.otpExpiresAt = otpExpiresAt;
-    await user.save();
-
-    console.log(`OTP for ${phone}: ${otpCode}`);
-
-    res.status(200).json({ message: "OTP sent successfully" });
-  } catch (err) {
-    next(err);
-  }
-};
-
-
-// Reset password using OTP
-export const resetPassword = async (req, res, next) => {
-  try {
-    const { phone, otp, newPassword } = req.body;
-
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    if (
-      user.otpCode !== otp ||
-      !user.otpExpiresAt ||
-      user.otpExpiresAt < Date.now()
-    ) {
-      return res.status(400).json({ message: "Invalid or expired OTP" });
+    // Check if this is a social user
+    if (user.provider !== 'local') {
+      return res.status(400).json({ 
+        message: `This account uses ${user.provider} authentication. Password reset is not available.` 
+      });
     }
 
     user.password = newPassword;
-    user.otpCode = undefined;
-    user.otpExpiresAt = undefined;
     await user.save();
 
     res.status(200).json({ message: "Password reset successful" });
   } catch (err) {
-    console.error('Error resetting password:', err);
     next(err);
   }
 };
 
-// Logout user
+// Logout user (existing method - no changes needed)
 export const logoutUser = async (req, res) => {
   res.cookie("token", "", {
     httpOnly: true,
@@ -216,6 +370,3 @@ export const logoutUser = async (req, res) => {
   });
   res.status(200).json({ message: "Logged out successfully" });
 };
-
-
-
