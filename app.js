@@ -5,13 +5,13 @@ import authRoutes from './routes/authRoutes.js';
 import cookieParser from "cookie-parser"
 import productRoutes from './routes/productRoutes.js';
 import categoryRoutes from './routes/categoryRoutes.js';
-import subCategoryRoutes from './routes/subCategoryRoutes.js';
-import storeRoutes from './routes/storeRoutes.js';
+import subCategoryRoutes from './routes/SubCategoryRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
 import couponRoutes from './routes/couponRoutes.js';
 import cartRoutes from './routes/cartRoutes.js';
 import protectedRoutes from './routes/protectedRoute.js';
 import deliveryRoutes from './routes/deliveryRoutes.js';
+import storeRoutes from './routes/storeRoutes.js'
 
 dotenv.config();
 
