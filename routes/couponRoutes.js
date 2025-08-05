@@ -26,7 +26,7 @@ router.route('/update/:id')
 router.route('/delete/:id')
     .delete( authorizeRoles('admin'),deleteCoupon);
 router.route('/useCoupon')
-    .post( authorizeRoles('user'),useCoupon);
+    .post( authorizeRoles('user',"delivery"),useCoupon);
 
 
 export default router;

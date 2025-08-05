@@ -1,0 +1,637 @@
+// controllers/deliveryController.js
+import asyncHandler from 'express-async-handler';
+import User from '../models/userModel.js';
+import { Order } from '../models/orderModel.js';
+import { getIO } from '../socket/socket.js';
+import { sendEmail } from '../utils/emails.js';
+
+// @desc    Register as delivery person
+// @route   POST /api/delivery/register
+// @access  Private
+export const registerDeliveryPerson = asyncHandler(async (req, res) => {
+  const { fullName, nationalId, workingCity, coordinates, idCardImage } = req.body;
+  const userId = req.user._id;
+
+  // Check if user already has a delivery application
+  const existingUser = await User.findById(userId);
+  if (existingUser.role === 'delivery') {
+    return res.status(400).json({
+      message: 'لديك طلب توصيل مسجل بالفعل',
+      status: existingUser.deliveryStatus
+    });
+  }
+
+  // Check if national ID is already used
+  const existingNationalId = await User.findOne({ 'deliveryInfo.nationalId': nationalId });
+  if (existingNationalId) {
+    return res.status(400).json({
+      message: 'رقم الهوية الوطنية مستخدم بالفعل'
+    });
+  }
+
+  // Update user to delivery role
+  const updatedUser = await User.findByIdAndUpdate(
+    userId,
+    {
+      role: 'delivery',
+      deliveryStatus: 'pending',
+      deliveryInfo: {
+        fullName,
+        nationalId,
+        idCardImage,
+        workingCity,
+        isAvailable: true,
+        rating: 5,
+        totalDeliveries: 0
+      },
+      ...(coordinates && {
+        geoLocation: {
+          type: 'Point',
+          coordinates: coordinates // [longitude, latitude]
+        }
+      })
+    },
+    { new: true }
+  );
+
+  // Notify admins about new delivery application
+  const admins = await User.find({ role: 'admin' });
+  const io = getIO();
+  
+  admins.forEach(admin => {
+    io.to(`user_${admin._id}`).emit('newDeliveryApplication', {
+      applicantId: userId,
+      applicantName: fullName,
+      workingCity,
+      message: `طلب توصيل جديد من ${fullName} في ${workingCity}`
+    });
+  });
+
+  res.status(201).json({
+    message: 'تم تقديم طلب التوصيل بنجاح، سيتم مراجعته من قبل الإدارة',
+    user: {
+      id: updatedUser._id,
+      name: updatedUser.name,
+      role: updatedUser.role,
+      deliveryStatus: updatedUser.deliveryStatus,
+      deliveryInfo: updatedUser.deliveryInfo
+    }
+  });
+});
+
+// @desc    Get all delivery applications (Admin only)
+// @route   GET /api/delivery/applications
+// @access  Private (Admin)
+export const getDeliveryApplications = asyncHandler(async (req, res) => {
+  const { status = 'all', page = 1, limit = 10 } = req.query;
+  
+  const filter = { role: 'delivery' };
+  if (status !== 'all') {
+    filter.deliveryStatus = status;
+  }
+
+  const applications = await User.find(filter)
+    .select('name phone email deliveryInfo deliveryStatus createdAt')
+    .populate('deliveryInfo.approvedBy', 'name')
+    .sort({ createdAt: -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+  const total = await User.countDocuments(filter);
+
+  res.status(200).json({
+    applications,
+    totalPages: Math.ceil(total / limit),
+    currentPage: page,
+    total
+  });
+});
+
+// @desc    Approve delivery application
+// @route   PATCH /api/delivery/approve/:id
+// @access  Private (Admin)
+export const approveDeliveryApplication = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const adminId = req.user._id;
+
+  const deliveryPerson = await User.findById(id);
+  if (!deliveryPerson || deliveryPerson.role !== 'delivery') {
+    return res.status(404).json({ message: 'طلب التوصيل غير موجود' });
+  }
+
+  if (deliveryPerson.deliveryStatus !== 'pending') {
+    return res.status(400).json({ 
+      message: `لا يمكن الموافقة على هذا الطلب، الحالة الحالية: ${deliveryPerson.deliveryStatus}` 
+    });
+  }
+
+  // Update delivery status
+  deliveryPerson.deliveryStatus = 'approved';
+  deliveryPerson.deliveryInfo.approvedBy = adminId;
+  deliveryPerson.deliveryInfo.approvedAt = new Date();
+  await deliveryPerson.save();
+
+  // Send notification to delivery person
+  const io = getIO();
+  io.to(`user_${id}`).emit('deliveryApplicationApproved', {
+    message: 'تم الموافقة على طلب التوصيل الخاص بك',
+    status: 'approved'
+  });
+
+  // Send email notification if email exists
+  if (deliveryPerson.email) {
+    try {
+      await sendEmail({
+        to: deliveryPerson.email,
+        subject: 'تم الموافقة على طلب التوصيل',
+        html: `
+          <h2>مبروك! تم الموافقة على طلبك</h2>
+          <p>عزيزي ${deliveryPerson.deliveryInfo.fullName},</p>
+          <p>يسعدنا إبلاغك بأنه تم الموافقة على طلب انضمامك كمندوب توصيل.</p>
+          <p>يمكنك الآن تسجيل الدخول والبدء في استقبال طلبات التوصيل.</p>
+          <p>مع تحيات فريق الإدارة</p>
+        `
+      });
+    } catch (error) {
+      console.error('Error sending approval email:', error);
+    }
+  }
+
+  res.status(200).json({
+    message: 'تم الموافقة على طلب التوصيل بنجاح',
+    deliveryPerson: {
+      id: deliveryPerson._id,
+      name: deliveryPerson.name,
+      deliveryStatus: deliveryPerson.deliveryStatus,
+      approvedAt: deliveryPerson.deliveryInfo.approvedAt
+    }
+  });
+});
+
+// @desc    Reject delivery application
+// @route   PATCH /api/delivery/reject/:id
+// @access  Private (Admin)
+export const rejectDeliveryApplication = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+  const adminId = req.user._id;
+
+  const deliveryPerson = await User.findById(id);
+  if (!deliveryPerson || deliveryPerson.role !== 'delivery') {
+    return res.status(404).json({ message: 'طلب التوصيل غير موجود' });
+  }
+
+  if (deliveryPerson.deliveryStatus !== 'pending') {
+    return res.status(400).json({ 
+      message: `لا يمكن رفض هذا الطلب، الحالة الحالية: ${deliveryPerson.deliveryStatus}` 
+    });
+  }
+
+  // Update delivery status
+  deliveryPerson.deliveryStatus = 'rejected';
+  deliveryPerson.deliveryInfo.rejectedAt = new Date();
+  deliveryPerson.deliveryInfo.rejectionReason = reason;
+  await deliveryPerson.save();
+
+  // Send notification to delivery person
+  const io = getIO();
+  io.to(`user_${id}`).emit('deliveryApplicationRejected', {
+    message: 'تم رفض طلب التوصيل الخاص بك',
+    reason,
+    status: 'rejected'
+  });
+
+  // Send email notification if email exists
+  if (deliveryPerson.email) {
+    try {
+      await sendEmail({
+        to: deliveryPerson.email,
+        subject: 'تم رفض طلب التوصيل',
+        html: `
+          <h2>نأسف لإبلاغك برفض طلبك</h2>
+          <p>عزيزي ${deliveryPerson.deliveryInfo.fullName},</p>
+          <p>نأسف لإبلاغك بأنه تم رفض طلب انضمامك كمندوب توصيل.</p>
+          ${reason ? `<p><strong>السبب:</strong> ${reason}</p>` : ''}
+          <p>يمكنك إعادة التقديم مرة أخرى بعد معالجة الأسباب المذكورة أعلاه.</p>
+          <p>مع تحيات فريق الإدارة</p>
+        `
+      });
+    } catch (error) {
+      console.error('Error sending rejection email:', error);
+    }
+  }
+
+  res.status(200).json({
+    message: 'تم رفض طلب التوصيل',
+    deliveryPerson: {
+      id: deliveryPerson._id,
+      name: deliveryPerson.name,
+      deliveryStatus: deliveryPerson.deliveryStatus,
+      rejectionReason: reason,
+      rejectedAt: deliveryPerson.deliveryInfo.rejectedAt
+    }
+  });
+});
+
+// @desc    Get available orders for delivery person
+// @route   GET /api/delivery/available-orders
+// @access  Private (Delivery)
+export const getAvailableOrders = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { page = 1, limit = 10, maxDistance = 10000 } = req.query;
+
+  // Check if delivery person is approved
+  const deliveryPerson = await User.findById(deliveryPersonId);
+  if (!deliveryPerson.isApprovedDelivery()) {
+    return res.status(403).json({ 
+      message: 'غير مصرح لك بعرض الطلبات، يجب الموافقة على طلب التوصيل أولاً' 
+    });
+  }
+
+  // Check if delivery person is available
+  if (!deliveryPerson.deliveryInfo.isAvailable) {
+    return res.status(400).json({ 
+      message: 'يجب تفعيل حالة الإتاحة لعرض الطلبات المتاحة' 
+    });
+  }
+
+  let availableOrders;
+
+  if (deliveryPerson.geoLocation && deliveryPerson.geoLocation.coordinates) {
+    // Find orders near delivery person location
+    availableOrders = await Order.findAvailableForDelivery(
+      deliveryPerson.geoLocation.coordinates,
+      maxDistance
+    );
+  } else {
+    // Fallback: find orders in the same city
+    availableOrders = await Order.find({
+      status: { $in: ['ready_for_pickup', 'processing'] },
+      'delivery.deliveryPerson': { $exists: false },
+    })
+    .populate([
+      { path: 'user', select: 'name phone location city' },
+      { path: 'store', select: 'name location phone city' },
+      { path: 'orderItems.product', select: 'name images' }
+    ])
+    .sort({ priority: -1, createdAt: 1 });
+
+    // Filter by city if available
+    if (deliveryPerson.deliveryInfo.workingCity) {
+      availableOrders = availableOrders.filter(order => 
+        order.store?.city === deliveryPerson.deliveryInfo.workingCity ||
+        order.user?.city === deliveryPerson.deliveryInfo.workingCity
+      );
+    }
+  }
+
+  // Implement pagination
+  const startIndex = (page - 1) * limit;
+  const endIndex = page * limit;
+  const paginatedOrders = availableOrders.slice(startIndex, endIndex);
+
+  res.status(200).json({
+    orders: paginatedOrders,
+    totalOrders: availableOrders.length,
+    totalPages: Math.ceil(availableOrders.length / limit),
+    currentPage: parseInt(page),
+    hasMore: endIndex < availableOrders.length
+  });
+});
+
+// @desc    Accept delivery order
+// @route   PATCH /api/delivery/accept-order/:orderId
+// @access  Private (Delivery)
+export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+  const deliveryPersonId = req.user._id;
+
+  // Check if delivery person is approved
+  const deliveryPerson = await User.findById(deliveryPersonId);
+  if (!deliveryPerson.isApprovedDelivery()) {
+    return res.status(403).json({ message: 'غير مصرح لك بقبول الطلبات' });
+  }
+
+  const order = await Order.findById(orderId)
+    .populate('user', 'name phone')
+    .populate('store', 'name phone location');
+    
+  if (!order) {
+    return res.status(404).json({ message: 'الطلب غير موجود' });
+  }
+
+  // Check if order is available for delivery
+  if (order.delivery?.deliveryPerson) {
+    return res.status(400).json({ message: 'هذا الطلب مخصص لمندوب آخر بالفعل' });
+  }
+
+  if (!['ready_for_pickup', 'processing'].includes(order.status)) {
+    return res.status(400).json({ message: 'هذا الطلب غير متاح للتوصيل' });
+  }
+
+  // Assign order to delivery person
+  await order.assignDeliveryPerson(deliveryPersonId);
+
+  // Notify customer and admin
+  const io = getIO();
+  io.to(`user_${order.user._id}`).emit('orderAssignedToDelivery', {
+    orderId: order._id,
+    deliveryPerson: {
+      name: deliveryPerson.name,
+      phone: deliveryPerson.phone
+    },
+    message: 'تم تخصيص طلبك لمندوب التوصيل'
+  });
+
+  // Notify admins
+  const admins = await User.find({ role: 'admin' });
+  admins.forEach(admin => {
+    io.to(`user_${admin._id}`).emit('orderAcceptedByDelivery', {
+      orderId: order._id,
+      deliveryPersonName: deliveryPerson.name,
+      customerName: order.user.name
+    });
+  });
+
+  res.status(200).json({
+    message: 'تم قبول الطلب بنجاح',
+    order: {
+      id: order._id,
+      status: order.status,
+      customer: order.user.name,
+      store: order.store.name,
+      totalPrice: order.totalPrice,
+      deliveryAddress: order.deliveryAddress,
+      assignedAt: order.delivery.assignedAt
+    }
+  });
+});
+
+// @desc    Update delivery status
+// @route   PATCH /api/delivery/update-status/:orderId
+// @access  Private (Delivery)
+export const updateDeliveryStatus = asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+  const { status, notes, coordinates } = req.body;
+  const deliveryPersonId = req.user._id;
+
+  const order = await Order.findById(orderId)
+    .populate('user', 'name phone')
+    .populate('store', 'name phone');
+
+  if (!order) {
+    return res.status(404).json({ message: 'الطلب غير موجود' });
+  }
+
+  // Update delivery location if provided
+  if (coordinates) {
+    order.delivery.deliveryLocation = {
+      type: 'Point',
+      coordinates: coordinates
+    };
+  }
+
+  // Update status
+  await order.updateDeliveryStatus(status, deliveryPersonId, notes);
+
+  // Send real-time notifications
+  const io = getIO();
+  const statusMessages = {
+    accepted: 'قبل مندوب التوصيل طلبك',
+    picked_up: 'تم استلام طلبك من المتجر',
+    on_the_way: 'مندوب التوصيل في الطريق إليك',
+    delivered: 'تم تسليم طلبك بنجاح'
+  };
+
+  // Notify customer
+  io.to(`user_${order.user._id}`).emit('deliveryStatusUpdated', {
+    orderId: order._id,
+    status: order.status,
+    message: statusMessages[status] || 'تم تحديث حالة التوصيل',
+    deliveryPerson: req.user.name,
+    notes,
+    coordinates
+  });
+
+  // Notify admins
+  const admins = await User.find({ role: 'admin' });
+  admins.forEach(admin => {
+    io.to(`user_${admin._id}`).emit('deliveryStatusUpdated', {
+      orderId: order._id,
+      status: order.status,
+      deliveryPersonName: req.user.name,
+      customerName: order.user.name
+    });
+  });
+
+  res.status(200).json({
+    message: 'تم تحديث حالة التوصيل بنجاح',
+    order: {
+      id: order._id,
+      status: order.status,
+      deliveryStatus: status,
+      updatedAt: new Date(),
+      notes
+    }
+  });
+});
+
+// @desc    Get delivery person's assigned orders
+// @route   GET /api/delivery/my-orders
+// @access  Private (Delivery)
+export const getMyDeliveryOrders = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { status, page = 1, limit = 10 } = req.query;
+
+  const filter = {
+    'delivery.deliveryPerson': deliveryPersonId
+  };
+
+  if (status) {
+    filter.status = status;
+  }
+
+  const orders = await Order.find(filter)
+    .populate([
+      { path: 'user', select: 'name phone location' },
+      { path: 'store', select: 'name location phone' },
+      { path: 'orderItems.product', select: 'name images' }
+    ])
+    .sort({ 'delivery.assignedAt': -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+  const total = await Order.countDocuments(filter);
+
+  res.status(200).json({
+    orders,
+    totalPages: Math.ceil(total / limit),
+    currentPage: parseInt(page),
+    total
+  });
+});
+
+// @desc    Toggle delivery person availability
+// @route   PATCH /api/delivery/toggle-availability
+// @access  Private (Delivery)
+export const toggleAvailability = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { isAvailable } = req.body;
+
+  const deliveryPerson = await User.findByIdAndUpdate(
+    deliveryPersonId,
+    { 'deliveryInfo.isAvailable': isAvailable },
+    { new: true }
+  );
+
+  res.status(200).json({
+    message: `تم ${isAvailable ? 'تفعيل' : 'إيقاف'} حالة الإتاحة`,
+    isAvailable: deliveryPerson.deliveryInfo.isAvailable
+  });
+});
+
+// @desc    Get delivery statistics
+// @route   GET /api/delivery/stats
+// @access  Private (Delivery)
+export const getDeliveryStats = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { period = 'week' } = req.query;
+
+  // Calculate date range based on period
+  const now = new Date();
+  let startDate;
+  
+  switch (period) {
+    case 'today':
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      break;
+    case 'week':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case 'month':
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      break;
+    default:
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  // Get delivery statistics
+  const stats = await Order.aggregate([
+    {
+      $match: {
+        'delivery.deliveryPerson': deliveryPersonId,
+        'delivery.assignedAt': { $gte: startDate }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalOrders: { $sum: 1 },
+        deliveredOrders: {
+          $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] }
+        },
+        totalEarnings: {
+          $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$deliveryFee', 0] }
+        },
+        averageDeliveryTime: {
+          $avg: {
+            $cond: [
+              { $and: ['$delivery.deliveredAt', '$delivery.assignedAt'] },
+              {
+                $divide: [
+                  { $subtract: ['$delivery.deliveredAt', '$delivery.assignedAt'] },
+                  1000 * 60 // Convert to minutes
+                ]
+              },
+              null
+            ]
+          }
+        }
+      }
+    }
+  ]);
+
+  const deliveryPerson = await User.findById(deliveryPersonId).select('deliveryInfo');
+
+  res.status(200).json({
+    period,
+    stats: stats[0] || {
+      totalOrders: 0,
+      deliveredOrders: 0,
+      totalEarnings: 0,
+      averageDeliveryTime: 0
+    },
+    overallStats: {
+      totalDeliveries: deliveryPerson.deliveryInfo.totalDeliveries,
+      rating: deliveryPerson.deliveryInfo.rating,
+      isAvailable: deliveryPerson.deliveryInfo.isAvailable
+    }
+  });
+});
+
+// @desc    Rate delivery by customer (called from order completion)
+// @route   PATCH /api/delivery/rate/:orderId
+// @access  Private (Customer)
+export const rateDelivery = asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+  const { rating, feedback } = req.body;
+  const customerId = req.user._id;
+
+  const order = await Order.findById(orderId);
+  if (!order) {
+    return res.status(404).json({ message: 'الطلب غير موجود' });
+  }
+
+  if (order.user.toString() !== customerId.toString()) {
+    return res.status(403).json({ message: 'غير مصرح لك بتقييم هذا الطلب' });
+  }
+
+  if (order.status !== 'delivered') {
+    return res.status(400).json({ message: 'لا يمكن تقييم طلب غير مكتمل' });
+  }
+
+  if (order.delivery.customerRating) {
+    return res.status(400).json({ message: 'تم تقييم هذا الطلب بالفعل' });
+  }
+
+  // Update order rating
+  order.delivery.customerRating = rating;
+  order.delivery.customerFeedback = feedback;
+  await order.save();
+
+  // Update delivery person's overall rating
+  const deliveryPersonId = order.delivery.deliveryPerson;
+  const deliveryOrders = await Order.find({
+    'delivery.deliveryPerson': deliveryPersonId,
+    'delivery.customerRating': { $exists: true }
+  });
+
+  const totalRatings = deliveryOrders.reduce((sum, ord) => sum + ord.delivery.customerRating, 0);
+  const averageRating = totalRatings / deliveryOrders.length;
+
+  await User.findByIdAndUpdate(deliveryPersonId, {
+    'deliveryInfo.rating': Math.round(averageRating * 10) / 10
+  });
+
+  res.status(200).json({
+    message: 'تم تقييم مندوب التوصيل بنجاح',
+    rating,
+    feedback
+  });
+});
+
+export const updateDeliveryLocation = asyncHandler(async (req, res) => {
+  const { coordinates, accuracy } = req.body;
+  const deliveryPersonId = req.user._id;
+
+  await User.findByIdAndUpdate(deliveryPersonId, {
+    geoLocation: {
+      type: 'Point',
+      coordinates: coordinates // [longitude, latitude]
+    },
+    'deliveryInfo.lastLocationUpdate': new Date(),
+    'deliveryInfo.locationAccuracy': accuracy
+  });
+
+  res.status(200).json({ message: 'تم تحديث الموقع بنجاح' });
+});

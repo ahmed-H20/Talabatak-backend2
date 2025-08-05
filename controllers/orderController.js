@@ -102,6 +102,8 @@ export const createOrdersFromCart = asyncHandler(async (req, res) => {
 
     io.emit("orderCreated", order);
   }
+
+
   res.status(201).json({ message: "Orders created", orders });
 });
 

@@ -23,10 +23,10 @@ export const sanitizeCoupon = (coupon) => {
     name: coupon.name || null,
     expire: coupon.expire || null,
     discount: coupon.discount || null,
-    stores: coupon.stores?.map(store => store.toString()) || [],
+    stores: coupon.stores?.map(store => store) || [],
     usageLimit: coupon.usageLimit || null,
     allStores: coupon.allStores || false,
-    usedBy: coupon.usedBy?.map(user => user.toString()) || [],
+    usedBy: coupon.usedBy?.map(user => user) || [],
     allUsers: coupon.allUsers || false,
     createdAt: coupon.createdAt || null,
 
@@ -36,14 +36,15 @@ export const sanitizeCoupon = (coupon) => {
 export const sanitizeCart = (cart) => {
   return {
     id: cart._id?.toString() || null,
-    cartItems: cart.cartItems.map(item => ({
+    cartItems: cart.cartItems?.map(item => ({
+      id: item._id?.toString() || null,
       product: {
         id: item.product?._id?.toString() || null,
         name: item.product?.name || null,
       },
       quantity: item.quantity || 1,
       price: item.price || 0,
-    })),
+    })) || [],
     totalCartPrice: cart.totalCartPrice || 0,
     totalPriceAfterDiscount: cart.totalPriceAfterDiscount || 0,
     user: {
@@ -52,7 +53,8 @@ export const sanitizeCart = (cart) => {
     },
     createdAt: normalizeDate(cart.createdAt),
   };
-}
+};
+
 
 export const sanitizeOrder = (order) => {
   return {

@@ -14,7 +14,7 @@ const router = express.Router();
 
 // Routes
 router.post("/", protectRoute, createOrdersFromCart);                   
-router.get("/", protectRoute,authorizeRoles('user'), getMyOrders);      
+router.get("/", protectRoute, getMyOrders);      
 router.get("/all", protectRoute,authorizeRoles('admin'), getOrders);              
 router.patch("/:id/cancel", protectRoute, cancelOrderIfPending);       
 router.patch("/:id/status", protectRoute, updateOrderStatus);       

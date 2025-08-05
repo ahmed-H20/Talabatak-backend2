@@ -1,34 +1,44 @@
 // routes/deliveryRoutes.js
-import express from "express";
+import express from 'express';
 import {
   registerDeliveryPerson,
-  getDeliveryRequests,
-  approveDeliveryRequest,
-  rejectDeliveryRequest,
+  getDeliveryApplications,
+  approveDeliveryApplication,
+  rejectDeliveryApplication,
   getAvailableOrders,
   acceptDeliveryOrder,
   updateDeliveryStatus,
   getMyDeliveryOrders,
-  updateDeliveryPersonStatus,
-} from "../controllers/deliveryController.js";
-import authorizeRoles from "../middlewares/authorizeRoles.js";
-import { protectRoute } from "../middlewares/protectRoute.js";
+  toggleAvailability,
+  getDeliveryStats,
+  rateDelivery
+} from '../controllers/deliveryController.js';
+import { protectRoute } from '../middlewares/protectRoute.js';
+import authorizeRoles from '../middlewares/authorizeRoles.js';
+import { uploadProductImages } from '../middlewares/uploadImages.js';
+import { updateDeliveryLocation } from '../controllers/deliveryController.js';
 
 const router = express.Router();
 
-// Public/User routes
-router.post("/register", protectRoute, registerDeliveryPerson);
+// Public routes (protected by auth but no role restriction)
+router.post('/register',uploadProductImages, registerDeliveryPerson);
 
-// Admin routes
-router.get("/requests", protectRoute, authorizeRoles("admin"), getDeliveryRequests);
-router.patch("/approve/:id", protectRoute, authorizeRoles("admin"), approveDeliveryRequest);
-router.patch("/reject/:id", protectRoute, authorizeRoles("admin"), rejectDeliveryRequest);
+// Admin only routes
+router.get('/applications', protectRoute, authorizeRoles('admin'), getDeliveryApplications);
+router.patch('/approve/:id', protectRoute, authorizeRoles('admin'), approveDeliveryApplication);
+router.patch('/reject/:id', protectRoute, authorizeRoles('admin'), rejectDeliveryApplication);
 
 // Delivery person routes
-router.get("/available-orders", protectRoute, authorizeRoles("delivery"), getAvailableOrders);
-router.patch("/accept-order/:orderId", protectRoute, authorizeRoles("delivery"), acceptDeliveryOrder);
-router.patch("/update-status/:orderId", protectRoute, authorizeRoles("delivery"), updateDeliveryStatus);
-router.get("/my-orders", protectRoute, authorizeRoles("delivery"), getMyDeliveryOrders);
-router.patch("/status", protectRoute, authorizeRoles("delivery"), updateDeliveryPersonStatus);
+router.get('/available-orders', protectRoute, authorizeRoles('delivery'), getAvailableOrders);
+router.patch('/accept-order/:orderId', protectRoute, authorizeRoles('delivery'), acceptDeliveryOrder);
+router.patch('/update-status/:orderId', protectRoute, authorizeRoles('delivery'), updateDeliveryStatus);
+router.get('/my-orders', protectRoute, authorizeRoles('delivery'), getMyDeliveryOrders);
+router.patch('/toggle-availability', protectRoute, authorizeRoles('delivery'), toggleAvailability);
+router.get('/stats', protectRoute, authorizeRoles('delivery'), getDeliveryStats);
+
+router.patch('/update-location', protectRoute, authorizeRoles('delivery'), updateDeliveryLocation);
+
+// Customer routes (for rating delivery)
+router.patch('/rate/:orderId', protectRoute, authorizeRoles('user'), rateDelivery);
 
 export default router;
