@@ -21,7 +21,14 @@ app.use(cookieParser());
 
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:8080', 'https://your-frontend-url.com'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+app.options('*', cors());
 app.use(express.json());
 
 // Routes
