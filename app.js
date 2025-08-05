@@ -10,6 +10,7 @@ import storeRoutes from './routes/storeRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
 import couponRoutes from './routes/couponRoutes.js';
 import cartRoutes from './routes/cartRoutes.js';
+import protectedRoutes from './routes/protectedRoute.js';
 
 dotenv.config();
 
@@ -31,6 +32,7 @@ app.use("/api/stores", storeRoutes)
 app.use("/api/orders", orderRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/cart", cartRoutes);
+app.use('/api/protect', protectedRoutes);
 app.use('/uploads', express.static('uploads'));
 
 

@@ -1,225 +1,26 @@
-// controllers/authController.js - Add these methods to your existing controller
-
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import asyncHandler from 'express-async-handler';
+import { sendPasswordResetEmail } from '../utils/emails.js';
 import User from '../models/userModel.js';
 import generateToken from '../utils/generateToken.js';
 import { sanitizeUser } from '../utils/sanitize.js';
-import bcrypt from 'bcryptjs';
 
-// Helper function to validate phone number (11 digits)
-const isValidPhone = (phone) => {
-  const phoneRegex = /^\d{11}$/;
-  return phoneRegex.test(phone);
-};
 
-// Generate a unique phone number for social users (temporary)
-const generateTempPhone = async () => {
-  let phone;
-  let exists = true;
-  
-  while (exists) {
-    // Generate a random 11-digit number starting with 05
-    phone = '05' + Math.floor(Math.random() * 1000000000).toString().padStart(9, '0');
-    exists = await User.findOne({ phone });
-  }
-  
-  return phone;
-};
-
-// Google Authentication
-export const googleAuth = async (req, res, next) => {
-  try {
-    const { providerId, name, email, photo } = req.body;
-
-    if (!providerId || !name || !email) {
-      return res.status(400).json({ message: 'Missing required Google data' });
-    }
-
-    // Check if user exists with this Google ID
-    let user = await User.findOne({ 
-      $or: [
-        { providerId, provider: 'google' },
-        { email }
-      ]
-    });
-
-    if (user) {
-      // Existing user - log them in
-      const token = generateToken(user._id);
-      return res.status(200).json({
-        message: 'Login successful',
-        user: sanitizeUser(user),
-        token,
-        isNewUser: false
-      });
-    }
-
-    // New user - create account with temporary phone
-    const tempPhone = await generateTempPhone();
-    
-    user = await User.create({
-      name,
-      email,
-      phone: tempPhone,
-      password: 'social-auth-' + Math.random().toString(36), // Random password for social users
-      location: {
-        coordinates: [31.2357, 30.0444], // Default Cairo coordinates
-        address: 'غير محدد'
-      },
-      role: 'user', // Default role
-      provider: 'google',
-      providerId,
-      photo,
-      isPhoneVerified: false, // Will be verified when they complete profile
-    });
-
-    const token = generateToken(user._id);
-    
-    res.status(201).json({
-      message: 'Account created with Google',
-      user: sanitizeUser(user),
-      token,
-      isNewUser: true
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// Facebook Authentication
-export const facebookAuth = async (req, res, next) => {
-  try {
-    const { providerId, name, email, photo } = req.body;
-
-    if (!providerId || !name) {
-      return res.status(400).json({ message: 'Missing required Facebook data' });
-    }
-
-    // Check if user exists with this Facebook ID or email
-    let user = await User.findOne({ 
-      $or: [
-        { providerId, provider: 'facebook' },
-        ...(email ? [{ email }] : [])
-      ]
-    });
-
-    if (user) {
-      // Existing user - log them in
-      const token = generateToken(user._id);
-      return res.status(200).json({
-        message: 'Login successful',
-        user: sanitizeUser(user),
-        token,
-        isNewUser: false
-      });
-    }
-
-    // New user - create account with temporary phone
-    const tempPhone = await generateTempPhone();
-    
-    user = await User.create({
-      name,
-      email: email || `fb_${providerId}@temp.com`,
-      phone: tempPhone,
-      password: 'social-auth-' + Math.random().toString(36), // Random password for social users
-      location: {
-        coordinates: [31.2357, 30.0444], // Default Cairo coordinates
-        address: 'غير محدد'
-      },
-      role: 'user', // Default role
-      provider: 'facebook',
-      providerId,
-      photo,
-      isPhoneVerified: false, // Will be verified when they complete profile
-    });
-
-    const token = generateToken(user._id);
-    
-    res.status(201).json({
-      message: 'Account created with Facebook',
-      user: sanitizeUser(user),
-      token,
-      isNewUser: true
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// Complete social profile for new social users
-export const completeSocialProfile = async (req, res, next) => {
-  try {
-    const { phone, address, role, location } = req.body;
-    const userId = req.user.id; // From auth middleware
-
-    if (!phone || !address || !role || !location?.coordinates) {
-      return res.status(400).json({ message: 'All fields are required' });
-    }
-
-    // Validate phone number (11 digits)
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
-    }
-
-    // Check if phone is already taken by another user
-    const phoneExists = await User.findOne({ 
-      phone, 
-      _id: { $ne: userId } 
-    });
-    
-    if (phoneExists) {
-      return res.status(400).json({ message: 'Phone number already exists' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Update user profile
-    user.phone = phone;
-    user.location = {
-      coordinates: location.coordinates,
-      address: address
-    };
-    user.role = role;
-    user.isPhoneVerified = true; // Consider phone verified after completion
-
-    await user.save();
-
-    res.status(200).json({
-      message: 'Profile completed successfully',
-      user: sanitizeUser(user)
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// Regular registration (existing method updated)
+// @desc    Sign Up
+// @route   POST/api/v1/auth/signup
+// @access  Public
 export const registerUser = async (req, res, next) => {
   try {
-    const { name, phone, email, password, location, role } = req.body;
+    const { name, phone, email, password, location , role } = req.body;
 
-    if (!name || !phone || !email || !password || !location || !role) {
+    if (!name || !phone || !email|| !password || !location || !role) {
       return res.status(400).json({ message: 'All fields are required' });
     }
 
-    // Validate phone number (11 digits)
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
-    }
-
-    const userExists = await User.findOne({ 
-      $or: [{ phone }, { email }] 
-    });
-    
+    const userExists = await User.findOne({ phone });
     if (userExists) {
-      if (userExists.phone === phone) {
-        return res.status(400).json({ message: 'User with this phone number already exists' });
-      }
-      if (userExists.email === email) {
-        return res.status(400).json({ message: 'User with this email already exists' });
-      }
+      return res.status(400).json({ message: 'User already exists' });
     }
 
     const user = await User.create({
@@ -229,80 +30,73 @@ export const registerUser = async (req, res, next) => {
       password,
       location,
       role,
-      provider: 'local',
-      isPhoneVerified: true, // Set to true since we're not doing verification
     });
-
-    const token = generateToken(user._id);
-    
+    const token = generateToken(user._id, res)
+    if (!token) {
+      return res.status(500).json({ message: 'Token generation failed' });
+    }
     res.status(201).json({
-      message: 'User registered successfully',
+      message: 'User registered. Please verify your phone number.',
       user: sanitizeUser(user),
-      token,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// Login user (existing method - no changes needed)
-export const loginUser = async (req, res, next) => {
-  try {
-    const { phone, password } = req.body;
-
-    if (!phone || !password) {
-      return res.status(400).json({ message: "Phone and password are required" });
-    }
-
-    // Validate phone number format
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
-    }
-
-    const user = await User.findOne({ phone });
-
-    if (!user) {
-      return res.status(401).json({ message: "Invalid phone or password" });
-    }
-
-    // Check if this is a social user trying to login with password
-    if (user.provider !== 'local') {
-      return res.status(401).json({ 
-        message: `Please use ${user.provider} to sign in` 
-      });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ message: "Invalid phone or password" });
-    }
-
-    const token = generateToken(user._id, res);
-    const sanitizedUser = sanitizeUser(user);
-
-    res.status(200).json({
-      message: "Login successful",
-      user: sanitizedUser,
       token
     });
-
   } catch (error) {
+    console.error('Error registering user:', error);
+    res.status(500).json({ message: 'Internal server error' });
     next(error);
   }
 };
+// @desc    Login
+// @route   POST/api/v1/auth/login
+// @access  Publi
+export const loginUser = async (req, res, next) => {
+  try {
+    const { phone, password } = req.body
 
-// Get user profile BY token (existing method - no changes needed)
+    if (!phone || !password) {
+      return res.status(400).json({ message: "Phone and password are required" })
+    }
+
+    const user = await User.findOne({ phone })
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid phone or password" })
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password)
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid phone or password" })
+    }
+
+    const token = generateToken(user._id, res)
+
+    res.status(200).json({
+      message: "Login successful",
+      user: sanitizeUser(user),
+      token
+    })
+
+  } catch (error) {
+    console.error('Error logging in user:', error);
+    res.status(500).json({ message: 'Internal server error' })
+    next(error)
+  }
+}
+
+// Get user profile BY token
 export const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    res.status(200).json({ user: sanitizeUser(user) });
+    const user = await User.findById(req.user.id)
+    if (!user) return res.status(404).json({ message: 'User not found' })
+    res.status(200).json({ user: sanitizeUser(user) })
   } catch (err) {
-    next(err);
+    console.error('Error fetching user profile:', err);
+    res.status(500).json({ message: 'Internal server error' })
+    next(err)
   }
-};
+}
 
-// Update user profile (existing method - no changes needed)
+// Update user profile
 export const updateProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
@@ -314,7 +108,7 @@ export const updateProfile = async (req, res, next) => {
     const { name, location, photo } = req.body;
 
     if (name) user.name = name;
-    if (location?.coordinates) user.location = location;
+    if (location) user.location = location;
     if (photo) user.photo = photo;
 
     const updatedUser = await user.save();
@@ -323,46 +117,113 @@ export const updateProfile = async (req, res, next) => {
       user: sanitizeUser(updatedUser),
     });
   } catch (err) {
+    console.error('Error updating user profile:', err);
+    res.status(500).json({ message: "Internal server error" });
     next(err);
   }
 };
 
-// Forget password - simplified without OTP (existing method updated)
-export const forgetPassword = async (req, res, next) => {
+// @desc   Forget password
+// @route  POST/api/v1/auth/forget-password
+// @access private
+export const forgetPassword = asyncHandler(async (req, res, next) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email is required",
+    });
+  }
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found",
+    });
+  }
+
+  const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const hashedResetCode = crypto.createHash('sha256').update(resetCode).digest('hex');
+  const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
+
+  user.resetPasswordToken = hashedResetCode;
+  user.resetPasswordTokenExpiration = expiresAt;
+  user.passwordResetVerified = false;
+
+  await user.save();
+
   try {
-    const { phone, newPassword } = req.body;
-
-    if (!phone || !newPassword) {
-      return res.status(400).json({ message: "Phone and new password are required" });
-    }
-
-    // Validate phone number format
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: 'Phone number must be exactly 11 digits' });
-    }
-
-    const user = await User.findOne({ phone });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Check if this is a social user
-    if (user.provider !== 'local') {
-      return res.status(400).json({ 
-        message: `This account uses ${user.provider} authentication. Password reset is not available.` 
-      });
-    }
-
-    user.password = newPassword;
+    await sendPasswordResetEmail(user.email, user.name, resetCode);
+    res.status(200).json({
+      success: true,
+      message: 'Password reset code sent to your email',
+    });
+  } catch (error) {
+    user.resetPasswordToken = undefined;
+    user.resetPasswordTokenExpiration = undefined;
+    user.passwordResetVerified = undefined;
     await user.save();
 
-    res.status(200).json({ message: "Password reset successful" });
-  } catch (err) {
-    next(err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send reset code',
+      error: error.message,
+    });
   }
-};
+});
 
-// Logout user (existing method - no changes needed)
+// @desc    Verify Password Reset Code
+// @route   POST/api/auth/verify-resetCode
+// @access  Private
+export const verifyResetPassword = (async (req, res, next) => {
+  const { resetCode , email } = req.body;
+  const hashedResetCode = crypto
+      .createHash('sha256')
+      .update(resetCode)
+      .digest('hex');
+
+  const user = await User.findOne({ resetPasswordToken: hashedResetCode , email });
+    if (!user || user.resetPasswordTokenExpiration < Date.now()) {
+      return res.status(500).json('Reset code invalid or expired');
+  }
+  user.passwordResetVerified = true;
+  await user.save();
+  res.status(200).json({
+      status: 'Success'
+  });
+});
+
+
+// @desc    Reset Password
+// @route   POST/api/auth/reset-password
+// @access  Private
+export const resetPassword = (async (req, res, next) => {
+  const { email, newPassword } = req.body;
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    return res.status(400).json('Invalid User email')
+  }
+
+  if (!user.passwordResetVerified) {
+    return res.status(400).json('Reset code not verified')
+  }
+  user.password = newPassword;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordTokenExpiration = undefined;
+  user.passwordResetVerified = undefined
+
+  await user.save();
+
+  res.status(200).json({
+      stasus: 'Success',
+      message: 'Password has been reset successfully. Please log in with your new password.'
+  });
+});  
+
+// Logout user
 export const logoutUser = async (req, res) => {
   res.cookie("token", "", {
     httpOnly: true,
@@ -370,3 +231,6 @@ export const logoutUser = async (req, res) => {
   });
   res.status(200).json({ message: "Logged out successfully" });
 };
+
+
+

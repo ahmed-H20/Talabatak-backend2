@@ -4,8 +4,6 @@ export const sanitizeUser = (user) => {
     name: user.name,
     phone: user.phone,
     location: user.location,
-    isPhoneVerified: user.isPhoneVerified,
-    status: user.status,
     profile_picture: user.profile_picture,
     createdAt: normalizeDate(user.createdAt),
   };
@@ -24,53 +22,24 @@ export const sanitizeCoupon = (coupon) => {
     id: coupon._id?.toString() || null,
     name: coupon.name || null,
     expire: coupon.expire || null,
-    discount: coupon.couponDiscount || null,
-    stores: Array.isArray(coupon.stores) 
-      ? coupon.stores.filter(store => store != null) 
-      : [],
+    discount: coupon.discount || null,
+    stores: coupon.stores?.map(store => store.toString()) || [],
     usageLimit: coupon.usageLimit || null,
     allStores: coupon.allStores || false,
-    usedBy: Array.isArray(coupon.usedBy) 
-      ? coupon.usedBy.filter(user => user != null).map(user => user.toString()) 
-      : [],
+    usedBy: coupon.usedBy?.map(user => user.toString()) || [],
     allUsers: coupon.allUsers || false,
     createdAt: coupon.createdAt || null,
+
   };
 };
 
-// export const sanitizeCart = (cart) => {
-//   return {
-//     id: cart._id?.toString() || null,
-//     cartItems: cart.cartItems.map(item => ({
-//       id: cart._id,
-//       product: {
-//         id: item.product?._id?.toString() || null,
-//         name: item.product?.name || null,
-//         images: item.product?.images,
-//         unit : item.product?.unit,
-//       },
-//       quantity: item.quantity || 1,
-//       price: item.price || 0,
-//     })),
-//     totalCartPrice: cart.totalCartPrice || 0,
-//     totalPriceAfterDiscount: cart.totalPriceAfterDiscount || 0,
-//     user: {
-//       id: cart.user?._id?.toString() || null,
-//       name: cart.user?.name || null,
-//     },
-//     createdAt: normalizeDate(cart.createdAt),
-//   };
-// }
 export const sanitizeCart = (cart) => {
   return {
     id: cart._id?.toString() || null,
     cartItems: cart.cartItems.map(item => ({
-      id: item._id?.toString() || null, // ✅ Use cart item ID here
       product: {
         id: item.product?._id?.toString() || null,
         name: item.product?.name || null,
-        images: item.product?.images,
-        unit: item.product?.unit,
       },
       quantity: item.quantity || 1,
       price: item.price || 0,
@@ -83,8 +52,7 @@ export const sanitizeCart = (cart) => {
     },
     createdAt: normalizeDate(cart.createdAt),
   };
-};
-
+}
 
 export const sanitizeOrder = (order) => {
   return {
@@ -94,7 +62,7 @@ export const sanitizeOrder = (order) => {
         id: item.product?._id?.toString() || null,
         name: item.product?.name || null,
         image: item.product?.image || null,
-      },      
+      },
       quantity: item.quantity || 1,
       price: item.price || 0,
     })),
