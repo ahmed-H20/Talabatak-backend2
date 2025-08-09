@@ -2,6 +2,7 @@
 import asyncHandler from 'express-async-handler';
 import User from '../models/userModel.js';
 import { Order } from '../models/orderModel.js';
+import { DeliveryRequest, DeliveryAssignment } from '../models/deliveryModel.js';
 import { getIO } from '../socket/socket.js';
 import { sendEmail } from '../utils/emails.js';
 
@@ -9,50 +10,62 @@ import { sendEmail } from '../utils/emails.js';
 // @route   POST /api/delivery/register
 // @access  Private
 export const registerDeliveryPerson = asyncHandler(async (req, res) => {
-  const { fullName, nationalId, workingCity, coordinates, idCardImage } = req.body;
+  const { fullName, nationalId, workingCity, coordinates, phone } = req.body;
   const userId = req.user._id;
 
+  // Get ID card image from uploaded files
+  const idCardImage = req.files?.idCardImage?.[0]?.path || req.body.idCardImage;
+  
+  if (!idCardImage) {
+    return res.status(400).json({
+      message: 'صورة بطاقة الهوية مطلوبة'
+    });
+  }
+
   // Check if user already has a delivery application
-  const existingUser = await User.findById(userId);
-  if (existingUser.role === 'delivery') {
+  const existingApplication = await DeliveryRequest.findOne({ user: userId });
+  if (existingApplication) {
     return res.status(400).json({
       message: 'لديك طلب توصيل مسجل بالفعل',
-      status: existingUser.deliveryStatus
+      status: existingApplication.status
     });
   }
 
   // Check if national ID is already used
-  const existingNationalId = await User.findOne({ 'deliveryInfo.nationalId': nationalId });
+  const existingNationalId = await DeliveryRequest.findOne({ nationalId });
   if (existingNationalId) {
     return res.status(400).json({
       message: 'رقم الهوية الوطنية مستخدم بالفعل'
     });
   }
 
-  // Update user to delivery role
-  const updatedUser = await User.findByIdAndUpdate(
-    userId,
-    {
-      role: 'delivery',
-      deliveryStatus: 'pending',
-      deliveryInfo: {
-        fullName,
-        nationalId,
-        idCardImage,
-        workingCity,
-        isAvailable: true,
-        rating: 5,
-        totalDeliveries: 0
-      },
-      ...(coordinates && {
-        geoLocation: {
-          type: 'Point',
-          coordinates: coordinates // [longitude, latitude]
-        }
-      })
-    },
-    { new: true }
-  );
+  // Create delivery request
+  const deliveryRequest = new DeliveryRequest({
+    user: userId,
+    fullName,
+    nationalId,
+    idCardImage,
+    phone,
+    workingCity,
+    ...(coordinates && {
+      location: {
+        type: 'Point',
+        coordinates: coordinates // [longitude, latitude]
+      }
+    })
+  });
+
+  await deliveryRequest.save();
+
+  // Update user location if coordinates provided
+  if (coordinates) {
+    await User.findByIdAndUpdate(userId, {
+      geoLocation: {
+        type: 'Point',
+        coordinates: coordinates
+      }
+    });
+  }
 
   // Notify admins about new delivery application
   const admins = await User.find({ role: 'admin' });
@@ -60,7 +73,7 @@ export const registerDeliveryPerson = asyncHandler(async (req, res) => {
   
   admins.forEach(admin => {
     io.to(`user_${admin._id}`).emit('newDeliveryApplication', {
-      applicantId: userId,
+      applicationId: deliveryRequest._id,
       applicantName: fullName,
       workingCity,
       message: `طلب توصيل جديد من ${fullName} في ${workingCity}`
@@ -69,12 +82,12 @@ export const registerDeliveryPerson = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     message: 'تم تقديم طلب التوصيل بنجاح، سيتم مراجعته من قبل الإدارة',
-    user: {
-      id: updatedUser._id,
-      name: updatedUser.name,
-      role: updatedUser.role,
-      deliveryStatus: updatedUser.deliveryStatus,
-      deliveryInfo: updatedUser.deliveryInfo
+    application: {
+      id: deliveryRequest._id,
+      fullName: deliveryRequest.fullName,
+      status: deliveryRequest.status,
+      workingCity: deliveryRequest.workingCity,
+      createdAt: deliveryRequest.createdAt
     }
   });
 });
@@ -85,24 +98,24 @@ export const registerDeliveryPerson = asyncHandler(async (req, res) => {
 export const getDeliveryApplications = asyncHandler(async (req, res) => {
   const { status = 'all', page = 1, limit = 10 } = req.query;
   
-  const filter = { role: 'delivery' };
+  const filter = {};
   if (status !== 'all') {
-    filter.deliveryStatus = status;
+    filter.status = status;
   }
 
-  const applications = await User.find(filter)
-    .select('name phone email deliveryInfo deliveryStatus createdAt')
-    .populate('deliveryInfo.approvedBy', 'name')
+  const applications = await DeliveryRequest.find(filter)
+    .populate('user', 'name email')
+    .populate('approvedBy', 'name')
     .sort({ createdAt: -1 })
     .limit(limit * 1)
     .skip((page - 1) * limit);
 
-  const total = await User.countDocuments(filter);
+  const total = await DeliveryRequest.countDocuments(filter);
 
   res.status(200).json({
     applications,
     totalPages: Math.ceil(total / limit),
-    currentPage: page,
+    currentPage: parseInt(page),
     total
   });
 });
@@ -114,39 +127,57 @@ export const approveDeliveryApplication = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const adminId = req.user._id;
 
-  const deliveryPerson = await User.findById(id);
-  if (!deliveryPerson || deliveryPerson.role !== 'delivery') {
+  const deliveryRequest = await DeliveryRequest.findById(id).populate('user');
+  if (!deliveryRequest) {
     return res.status(404).json({ message: 'طلب التوصيل غير موجود' });
   }
 
-  if (deliveryPerson.deliveryStatus !== 'pending') {
+  if (deliveryRequest.status !== 'pending') {
     return res.status(400).json({ 
-      message: `لا يمكن الموافقة على هذا الطلب، الحالة الحالية: ${deliveryPerson.deliveryStatus}` 
+      message: `لا يمكن الموافقة على هذا الطلب، الحالة الحالية: ${deliveryRequest.status}` 
     });
   }
 
-  // Update delivery status
-  deliveryPerson.deliveryStatus = 'approved';
-  deliveryPerson.deliveryInfo.approvedBy = adminId;
-  deliveryPerson.deliveryInfo.approvedAt = new Date();
-  await deliveryPerson.save();
+  // Update delivery request status
+  deliveryRequest.status = 'approved';
+  deliveryRequest.approvedBy = adminId;
+  deliveryRequest.approvedAt = new Date();
+  await deliveryRequest.save();
+
+  // Update user to delivery role
+  const user = deliveryRequest.user;
+  await User.findByIdAndUpdate(user._id, {
+    role: 'delivery',
+    deliveryStatus: 'approved',
+    deliveryInfo: {
+      fullName: deliveryRequest.fullName,
+      nationalId: deliveryRequest.nationalId,
+      idCardImage: deliveryRequest.idCardImage,
+      workingCity: deliveryRequest.workingCity,
+      isAvailable: true,
+      rating: 5,
+      totalDeliveries: 0,
+      approvedBy: adminId,
+      approvedAt: new Date()
+    }
+  });
 
   // Send notification to delivery person
   const io = getIO();
-  io.to(`user_${id}`).emit('deliveryApplicationApproved', {
+  io.to(`user_${user._id}`).emit('deliveryApplicationApproved', {
     message: 'تم الموافقة على طلب التوصيل الخاص بك',
     status: 'approved'
   });
 
   // Send email notification if email exists
-  if (deliveryPerson.email) {
+  if (user.email) {
     try {
       await sendEmail({
-        to: deliveryPerson.email,
+        to: user.email,
         subject: 'تم الموافقة على طلب التوصيل',
         html: `
           <h2>مبروك! تم الموافقة على طلبك</h2>
-          <p>عزيزي ${deliveryPerson.deliveryInfo.fullName},</p>
+          <p>عزيزي ${deliveryRequest.fullName},</p>
           <p>يسعدنا إبلاغك بأنه تم الموافقة على طلب انضمامك كمندوب توصيل.</p>
           <p>يمكنك الآن تسجيل الدخول والبدء في استقبال طلبات التوصيل.</p>
           <p>مع تحيات فريق الإدارة</p>
@@ -159,11 +190,11 @@ export const approveDeliveryApplication = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     message: 'تم الموافقة على طلب التوصيل بنجاح',
-    deliveryPerson: {
-      id: deliveryPerson._id,
-      name: deliveryPerson.name,
-      deliveryStatus: deliveryPerson.deliveryStatus,
-      approvedAt: deliveryPerson.deliveryInfo.approvedAt
+    application: {
+      id: deliveryRequest._id,
+      fullName: deliveryRequest.fullName,
+      status: deliveryRequest.status,
+      approvedAt: deliveryRequest.approvedAt
     }
   });
 });
@@ -176,40 +207,42 @@ export const rejectDeliveryApplication = asyncHandler(async (req, res) => {
   const { reason } = req.body;
   const adminId = req.user._id;
 
-  const deliveryPerson = await User.findById(id);
-  if (!deliveryPerson || deliveryPerson.role !== 'delivery') {
+  const deliveryRequest = await DeliveryRequest.findById(id).populate('user');
+  if (!deliveryRequest) {
     return res.status(404).json({ message: 'طلب التوصيل غير موجود' });
   }
 
-  if (deliveryPerson.deliveryStatus !== 'pending') {
+  if (deliveryRequest.status !== 'pending') {
     return res.status(400).json({ 
-      message: `لا يمكن رفض هذا الطلب، الحالة الحالية: ${deliveryPerson.deliveryStatus}` 
+      message: `لا يمكن رفض هذا الطلب، الحالة الحالية: ${deliveryRequest.status}` 
     });
   }
 
-  // Update delivery status
-  deliveryPerson.deliveryStatus = 'rejected';
-  deliveryPerson.deliveryInfo.rejectedAt = new Date();
-  deliveryPerson.deliveryInfo.rejectionReason = reason;
-  await deliveryPerson.save();
+  // Update delivery request status
+  deliveryRequest.status = 'rejected';
+  deliveryRequest.rejectedAt = new Date();
+  deliveryRequest.rejectionReason = reason;
+  await deliveryRequest.save();
+
+  const user = deliveryRequest.user;
 
   // Send notification to delivery person
   const io = getIO();
-  io.to(`user_${id}`).emit('deliveryApplicationRejected', {
+  io.to(`user_${user._id}`).emit('deliveryApplicationRejected', {
     message: 'تم رفض طلب التوصيل الخاص بك',
     reason,
     status: 'rejected'
   });
 
   // Send email notification if email exists
-  if (deliveryPerson.email) {
+  if (user.email) {
     try {
       await sendEmail({
-        to: deliveryPerson.email,
+        to: user.email,
         subject: 'تم رفض طلب التوصيل',
         html: `
           <h2>نأسف لإبلاغك برفض طلبك</h2>
-          <p>عزيزي ${deliveryPerson.deliveryInfo.fullName},</p>
+          <p>عزيزي ${deliveryRequest.fullName},</p>
           <p>نأسف لإبلاغك بأنه تم رفض طلب انضمامك كمندوب توصيل.</p>
           ${reason ? `<p><strong>السبب:</strong> ${reason}</p>` : ''}
           <p>يمكنك إعادة التقديم مرة أخرى بعد معالجة الأسباب المذكورة أعلاه.</p>
@@ -223,12 +256,12 @@ export const rejectDeliveryApplication = asyncHandler(async (req, res) => {
 
   res.status(200).json({
     message: 'تم رفض طلب التوصيل',
-    deliveryPerson: {
-      id: deliveryPerson._id,
-      name: deliveryPerson.name,
-      deliveryStatus: deliveryPerson.deliveryStatus,
+    application: {
+      id: deliveryRequest._id,
+      fullName: deliveryRequest.fullName,
+      status: deliveryRequest.status,
       rejectionReason: reason,
-      rejectedAt: deliveryPerson.deliveryInfo.rejectedAt
+      rejectedAt: deliveryRequest.rejectedAt
     }
   });
 });
@@ -242,14 +275,14 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
 
   // Check if delivery person is approved
   const deliveryPerson = await User.findById(deliveryPersonId);
-  if (!deliveryPerson.isApprovedDelivery()) {
+  if (deliveryPerson.role !== 'delivery' || deliveryPerson.deliveryStatus !== 'approved') {
     return res.status(403).json({ 
       message: 'غير مصرح لك بعرض الطلبات، يجب الموافقة على طلب التوصيل أولاً' 
     });
   }
 
   // Check if delivery person is available
-  if (!deliveryPerson.deliveryInfo.isAvailable) {
+  if (!deliveryPerson.deliveryInfo?.isAvailable) {
     return res.status(400).json({ 
       message: 'يجب تفعيل حالة الإتاحة لعرض الطلبات المتاحة' 
     });
@@ -257,18 +290,38 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
 
   let availableOrders;
 
+  // Find orders that are ready for delivery and not assigned to anyone
+  const baseFilter = {
+    status: { $in: ['ready_for_pickup', 'processing'] }
+  };
+
+  // Check if order is not already assigned
+  const assignedOrderIds = await DeliveryAssignment.find({
+    status: { $in: ['assigned', 'accepted', 'picked_up', 'on_the_way'] }
+  }).distinct('order');
+
+  baseFilter._id = { $nin: assignedOrderIds };
+
   if (deliveryPerson.geoLocation && deliveryPerson.geoLocation.coordinates) {
-    // Find orders near delivery person location
-    availableOrders = await Order.findAvailableForDelivery(
-      deliveryPerson.geoLocation.coordinates,
-      maxDistance
-    );
+    // Find orders near delivery person location using geospatial query
+    availableOrders = await Order.find({
+      ...baseFilter,
+      'store.location': {
+        $near: {
+          $geometry: deliveryPerson.geoLocation,
+          $maxDistance: maxDistance
+        }
+      }
+    })
+    .populate([
+      { path: 'user', select: 'name phone location city' },
+      { path: 'store', select: 'name location phone city' },
+      { path: 'orderItems.product', select: 'name images' }
+    ])
+    .sort({ priority: -1, createdAt: 1 });
   } else {
     // Fallback: find orders in the same city
-    availableOrders = await Order.find({
-      status: { $in: ['ready_for_pickup', 'processing'] },
-      'delivery.deliveryPerson': { $exists: false },
-    })
+    availableOrders = await Order.find(baseFilter)
     .populate([
       { path: 'user', select: 'name phone location city' },
       { path: 'store', select: 'name location phone city' },
@@ -277,7 +330,7 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
     .sort({ priority: -1, createdAt: 1 });
 
     // Filter by city if available
-    if (deliveryPerson.deliveryInfo.workingCity) {
+    if (deliveryPerson.deliveryInfo?.workingCity) {
       availableOrders = availableOrders.filter(order => 
         order.store?.city === deliveryPerson.deliveryInfo.workingCity ||
         order.user?.city === deliveryPerson.deliveryInfo.workingCity
@@ -308,7 +361,7 @@ export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
 
   // Check if delivery person is approved
   const deliveryPerson = await User.findById(deliveryPersonId);
-  if (!deliveryPerson.isApprovedDelivery()) {
+  if (deliveryPerson.role !== 'delivery' || deliveryPerson.deliveryStatus !== 'approved') {
     return res.status(403).json({ message: 'غير مصرح لك بقبول الطلبات' });
   }
 
@@ -320,8 +373,9 @@ export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'الطلب غير موجود' });
   }
 
-  // Check if order is available for delivery
-  if (order.delivery?.deliveryPerson) {
+  // Check if order is already assigned
+  const existingAssignment = await DeliveryAssignment.findOne({ order: orderId });
+  if (existingAssignment) {
     return res.status(400).json({ message: 'هذا الطلب مخصص لمندوب آخر بالفعل' });
   }
 
@@ -329,8 +383,19 @@ export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'هذا الطلب غير متاح للتوصيل' });
   }
 
-  // Assign order to delivery person
-  await order.assignDeliveryPerson(deliveryPersonId);
+  // Create delivery assignment
+  const deliveryAssignment = new DeliveryAssignment({
+    order: orderId,
+    deliveryPerson: deliveryPersonId,
+    status: 'accepted',
+    acceptedAt: new Date()
+  });
+
+  await deliveryAssignment.save();
+
+  // Update order status
+  order.status = 'assigned_to_delivery';
+  await order.save();
 
   // Notify customer and admin
   const io = getIO();
@@ -362,7 +427,7 @@ export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
       store: order.store.name,
       totalPrice: order.totalPrice,
       deliveryAddress: order.deliveryAddress,
-      assignedAt: order.delivery.assignedAt
+      assignedAt: deliveryAssignment.assignedAt
     }
   });
 });
@@ -372,7 +437,7 @@ export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
 // @access  Private (Delivery)
 export const updateDeliveryStatus = asyncHandler(async (req, res) => {
   const { orderId } = req.params;
-  const { status, notes, coordinates } = req.body;
+  const { status, notes } = req.body;
   const deliveryPersonId = req.user._id;
 
   const order = await Order.findById(orderId)
@@ -383,16 +448,43 @@ export const updateDeliveryStatus = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'الطلب غير موجود' });
   }
 
-  // Update delivery location if provided
-  if (coordinates) {
-    order.delivery.deliveryLocation = {
-      type: 'Point',
-      coordinates: coordinates
-    };
+  // Find delivery assignment
+  const deliveryAssignment = await DeliveryAssignment.findOne({
+    order: orderId,
+    deliveryPerson: deliveryPersonId
+  });
+
+  if (!deliveryAssignment) {
+    return res.status(403).json({ message: 'هذا الطلب غير مخصص لك' });
   }
 
-  // Update status
-  await order.updateDeliveryStatus(status, deliveryPersonId, notes);
+  // Update delivery assignment status
+  deliveryAssignment.status = status;
+  deliveryAssignment.deliveryNotes = notes;
+
+  // Set timestamps based on status
+  switch (status) {
+    case 'picked_up':
+      deliveryAssignment.pickedUpAt = new Date();
+      order.status = 'picked_up';
+      break;
+    case 'on_the_way':
+      order.status = 'on_the_way';
+      break;
+    case 'delivered':
+      deliveryAssignment.deliveredAt = new Date();
+      deliveryAssignment.actualDeliveryTime = new Date();
+      order.status = 'delivered';
+      
+      // Update delivery person's total deliveries
+      await User.findByIdAndUpdate(deliveryPersonId, {
+        $inc: { 'deliveryInfo.totalDeliveries': 1 }
+      });
+      break;
+  }
+
+  await deliveryAssignment.save();
+  await order.save();
 
   // Send real-time notifications
   const io = getIO();
@@ -409,8 +501,7 @@ export const updateDeliveryStatus = asyncHandler(async (req, res) => {
     status: order.status,
     message: statusMessages[status] || 'تم تحديث حالة التوصيل',
     deliveryPerson: req.user.name,
-    notes,
-    coordinates
+    notes
   });
 
   // Notify admins
@@ -444,27 +535,30 @@ export const getMyDeliveryOrders = asyncHandler(async (req, res) => {
   const { status, page = 1, limit = 10 } = req.query;
 
   const filter = {
-    'delivery.deliveryPerson': deliveryPersonId
+    deliveryPerson: deliveryPersonId
   };
 
   if (status) {
     filter.status = status;
   }
 
-  const orders = await Order.find(filter)
-    .populate([
-      { path: 'user', select: 'name phone location' },
-      { path: 'store', select: 'name location phone' },
-      { path: 'orderItems.product', select: 'name images' }
-    ])
-    .sort({ 'delivery.assignedAt': -1 })
+  const assignments = await DeliveryAssignment.find(filter)
+    .populate({
+      path: 'order',
+      populate: [
+        { path: 'user', select: 'name phone location' },
+        { path: 'store', select: 'name location phone' },
+        { path: 'orderItems.product', select: 'name images' }
+      ]
+    })
+    .sort({ assignedAt: -1 })
     .limit(limit * 1)
     .skip((page - 1) * limit);
 
-  const total = await Order.countDocuments(filter);
+  const total = await DeliveryAssignment.countDocuments(filter);
 
   res.status(200).json({
-    orders,
+    assignments,
     totalPages: Math.ceil(total / limit),
     currentPage: parseInt(page),
     total
@@ -516,12 +610,23 @@ export const getDeliveryStats = asyncHandler(async (req, res) => {
   }
 
   // Get delivery statistics
-  const stats = await Order.aggregate([
+  const stats = await DeliveryAssignment.aggregate([
     {
       $match: {
-        'delivery.deliveryPerson': deliveryPersonId,
-        'delivery.assignedAt': { $gte: startDate }
+        deliveryPerson: deliveryPersonId,
+        assignedAt: { $gte: startDate }
       }
+    },
+    {
+      $lookup: {
+        from: 'orders',
+        localField: 'order',
+        foreignField: '_id',
+        as: 'orderDetails'
+      }
+    },
+    {
+      $unwind: '$orderDetails'
     },
     {
       $group: {
@@ -531,15 +636,15 @@ export const getDeliveryStats = asyncHandler(async (req, res) => {
           $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] }
         },
         totalEarnings: {
-          $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$deliveryFee', 0] }
+          $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$orderDetails.deliveryFee', 0] }
         },
         averageDeliveryTime: {
           $avg: {
             $cond: [
-              { $and: ['$delivery.deliveredAt', '$delivery.assignedAt'] },
+              { $and: ['$deliveredAt', '$assignedAt'] },
               {
                 $divide: [
-                  { $subtract: ['$delivery.deliveredAt', '$delivery.assignedAt'] },
+                  { $subtract: ['$deliveredAt', '$assignedAt'] },
                   1000 * 60 // Convert to minutes
                 ]
               },
@@ -562,9 +667,9 @@ export const getDeliveryStats = asyncHandler(async (req, res) => {
       averageDeliveryTime: 0
     },
     overallStats: {
-      totalDeliveries: deliveryPerson.deliveryInfo.totalDeliveries,
-      rating: deliveryPerson.deliveryInfo.rating,
-      isAvailable: deliveryPerson.deliveryInfo.isAvailable
+      totalDeliveries: deliveryPerson.deliveryInfo?.totalDeliveries || 0,
+      rating: deliveryPerson.deliveryInfo?.rating || 5,
+      isAvailable: deliveryPerson.deliveryInfo?.isAvailable || false
     }
   });
 });
@@ -590,24 +695,30 @@ export const rateDelivery = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: 'لا يمكن تقييم طلب غير مكتمل' });
   }
 
-  if (order.delivery.customerRating) {
+  // Find delivery assignment
+  const deliveryAssignment = await DeliveryAssignment.findOne({ order: orderId });
+  if (!deliveryAssignment) {
+    return res.status(404).json({ message: 'تفاصيل التوصيل غير موجودة' });
+  }
+
+  if (deliveryAssignment.customerRating) {
     return res.status(400).json({ message: 'تم تقييم هذا الطلب بالفعل' });
   }
 
-  // Update order rating
-  order.delivery.customerRating = rating;
-  order.delivery.customerFeedback = feedback;
-  await order.save();
+  // Update delivery assignment rating
+  deliveryAssignment.customerRating = rating;
+  deliveryAssignment.customerFeedback = feedback;
+  await deliveryAssignment.save();
 
   // Update delivery person's overall rating
-  const deliveryPersonId = order.delivery.deliveryPerson;
-  const deliveryOrders = await Order.find({
-    'delivery.deliveryPerson': deliveryPersonId,
-    'delivery.customerRating': { $exists: true }
+  const deliveryPersonId = deliveryAssignment.deliveryPerson;
+  const ratedAssignments = await DeliveryAssignment.find({
+    deliveryPerson: deliveryPersonId,
+    customerRating: { $exists: true }
   });
 
-  const totalRatings = deliveryOrders.reduce((sum, ord) => sum + ord.delivery.customerRating, 0);
-  const averageRating = totalRatings / deliveryOrders.length;
+  const totalRatings = ratedAssignments.reduce((sum, assignment) => sum + assignment.customerRating, 0);
+  const averageRating = totalRatings / ratedAssignments.length;
 
   await User.findByIdAndUpdate(deliveryPersonId, {
     'deliveryInfo.rating': Math.round(averageRating * 10) / 10
@@ -620,6 +731,9 @@ export const rateDelivery = asyncHandler(async (req, res) => {
   });
 });
 
+// @desc    Update delivery person location
+// @route   PATCH /api/delivery/update-location
+// @access  Private (Delivery)
 export const updateDeliveryLocation = asyncHandler(async (req, res) => {
   const { coordinates, accuracy } = req.body;
   const deliveryPersonId = req.user._id;

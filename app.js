@@ -20,16 +20,23 @@ const app = express();
 app.use(cookieParser());
 
 
-// Middleware
+// //Middleware
 // app.use(cors({
 //   origin: ['http://localhost:8080', 'https://your-frontend-url.com'],
 //   credentials: true,
-//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+//   methods: ['GET', 'POST', 'PATCH','PUT', 'DELETE', 'OPTIONS'],
 //   allowedHeaders: ['Content-Type', 'Authorization'],
 // }));
 
-app.use(express.json());
-app.options('*', cors());
+
+app.use(cors({
+  origin: "*", 
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// app.use(express.json());
 
 // Routes
 app.use('/api/auth', authRoutes);
