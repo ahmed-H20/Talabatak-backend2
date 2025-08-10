@@ -86,6 +86,8 @@ export const getNearbyStores = asyncHandler(async (req, res) => {
     return distance <= store.deliveryRangeKm;
   });
 
+  console.log("User location:", userLocation);
+
   if (nearbyStores.length > 0) {
     // Get products for nearby stores using the store field in Product
     const storeIds = nearbyStores.map(store => store._id);

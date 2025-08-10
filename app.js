@@ -12,6 +12,7 @@ import cartRoutes from './routes/cartRoutes.js';
 import protectedRoutes from './routes/protectedRoute.js';
 import deliveryRoutes from './routes/deliveryRoutes.js';
 import storeRoutes from './routes/storeRoutes.js'
+import locationRoutes from "./routes/locationRoutes.js";
 
 dotenv.config();
 
@@ -50,6 +51,7 @@ app.use("/api/cart", cartRoutes);
 app.use('/api/protect', protectedRoutes);
 app.use('/uploads', express.static('uploads'));
 app.use('/api/delivery', deliveryRoutes); 
+app.use("/api/location", locationRoutes);
 
 
 export default app;
