@@ -5,64 +5,79 @@ import  Product  from "../models/productModel.js";
 import User from "../models/userModel.js";
 import {ORDER_NOTIFICATION_TEMPLATE} from "../utils/emailTemplates.js";
 import { sendEmail } from "../utils/emails.js";
-import { getIO } from "../socket/socket.js"; // Import Socket.IO instance
+import { getIO } from "../socket/socket.js"; // Import Socket.IO i
+import Store from "../models/StoreModel.js"
+
 
 // Create orders from cart items
-export const createOrdersFromCart = asyncHandler(async (req, res) => {
-  const { orderItems, deliveryAddress } = req.body;
+export const createOrdersFromCart = async (req, res) => {
+  try {
+    const { cartItems, deliveryAddress, deliveryCoordinates } = req.body;
+    const userId = req.user._id; 
+    const io = getIO();
 
-  if (!orderItems || orderItems.length === 0) {
-    res.status(400);
-    throw new Error("No order items provided");
-  }
-
-  const groupOrderId = new mongoose.Types.ObjectId();
-  const storeMap = new Map();
-
-  for (const item of orderItems) {
-    const product = await Product.findById(item.product).populate("store");
-    if (!product) throw new Error("Product not found");
-
-    const storeId = product.store._id.toString();
-
-    if (!storeMap.has(storeId)) {
-      storeMap.set(storeId, []);
+    if (!cartItems || cartItems.length === 0) {
+      return res.status(400).json({ message: "Cart is empty" });
     }
 
-    storeMap.get(storeId).push({
-      product: product._id,
-      quantity: item.quantity,
-      price: product.price,
-    });
-  }
+    if (!deliveryCoordinates || deliveryCoordinates.length !== 2) {
+      return res.status(400).json({ message: "Delivery coordinates are required [lng, lat]" });
+    }
 
-  const orders = [];
-  const io = getIO();
+    const orders = [];
 
-  for (const [storeId, items] of storeMap.entries()) {
-    const deliveryFee = 30;
-    const totalPrice =
-      items.reduce((sum, item) => sum + item.price * item.quantity, 0) +
-      deliveryFee;
+    // تقسيم الطلبات حسب المتجر
+    const storesMap = {};
+    for (const item of cartItems) {
+      if (!storesMap[item.store]) {
+        storesMap[item.store] = [];
+      }
+      storesMap[item.store].push(item);
+    }
 
-    const order = new Order({
-      user: req.user,
-      store: storeId,
-      orderItems: items,
-      deliveryAddress,
-      deliveryFee,
-      totalPrice,
-      groupOrderId,
-    });
+    for (const storeId of Object.keys(storesMap)) {
+      const store = await Store.findById(storeId);
+      if (!store) continue;
 
-    await order.save();
-    orders.push(order);
-    const populatedOrder = await Order.findById(order._id).populate([
-      { path: "orderItems.product", select: "name" },
-      { path: "store", select: "name" },
-    ]);
+      const storeLocationGeoJSON = {
+        type: "Point",
+        coordinates: store.location.coordinates
+      };
 
-    const orderItemsHtml = populatedOrder.orderItems
+      const deliveryFee = 30
+      const totalPrice = storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30) +
+        deliveryFee;
+
+      const order = new Order({
+        user: userId,
+        store: storeId,
+        orderItems: storesMap[storeId].map(i => ({
+          product: i.product,
+          quantity: i.quantity,
+          price: i.price,
+        })),
+        deliveryAddress,
+        deliveryLocation: {
+          type: "Point",
+          coordinates: deliveryCoordinates // [lng, lat]
+        },
+
+        storeLocation: storeLocationGeoJSON,
+        totalPrice: storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30)
+      });
+
+      await order.save();
+
+      const populatedOrder = await Order.findById(order._id)
+        .populate({ path: "user", select : "name phone"})
+        .populate({ path: "orderItems.product", select: "name images" })
+        .populate({ path: "store", select: "name phone " });
+
+      orders.push(populatedOrder);
+
+      io.emit("orderCreated", populatedOrder);
+
+      const orderItemsHtml = populatedOrder.orderItems
       .map(
         (item) => `
         <div class="order-item">
@@ -74,13 +89,13 @@ export const createOrdersFromCart = asyncHandler(async (req, res) => {
       )
       .join("");
 
-    const emailHtml = ORDER_NOTIFICATION_TEMPLATE
+      const emailHtml = ORDER_NOTIFICATION_TEMPLATE
       .replace("{customerName}", req.user.name)
       .replace("{orderId}", order._id)
       .replace("{storeName}", populatedOrder.store.name)
       .replace("{deliveryAddress}", deliveryAddress)
       .replace("{orderItems}", orderItemsHtml)
-      .replace("{deliveryFee}", deliveryFee)
+      .replace("{deliveryFee}", 30)
       .replace("{totalPrice}", totalPrice);
 
       const admins = await User.find({ role: "admin", email: { $exists: true, $ne: "" } });
@@ -100,12 +115,18 @@ export const createOrdersFromCart = asyncHandler(async (req, res) => {
         }
       }
 
-    io.emit("orderCreated", order);
+      
+
+    
   }
 
-
-  res.status(201).json({ message: "Orders created", orders });
-});
+     
+    res.status(201).json({ orders });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
 
 
 // get user's orders
@@ -181,7 +202,11 @@ export const updateOrderStatus = asyncHandler(async (req, res) => {
 
   // Real-time update status via Socket.IO
   const io = getIO();
-  io.emit("orderStatusUpdated", order);
+  const populatedOrder = await Order.findById(order._id)
+  .populate({ path: "user", select : "name phone"})
+  .populate({ path: "orderItems.product", select: "name images" })
+  .populate({ path: "store", select: "name phone" });
+  io.emit("orderStatusUpdated", populatedOrder);
 
  
   res.status(200).json({ message: "Order status updated", order });
@@ -221,7 +246,11 @@ export const updateOrderIfPending = asyncHandler(async (req, res) => {
 
   // Real-time update via Socket.IO
   const io = getIO();
-  io.emit("orderUpdated", order);
+  const populatedOrder = await Order.findById(order._id)
+  .populate({ path: "user", select : "name phone"})
+  .populate({ path: "orderItems.product", select: "name images" })
+  .populate({ path: "store", select: "name phone" });
+  io.emit("orderUpdated", populatedOrder);
 
   res.status(200).json({ message: "Order updated", order });
 });

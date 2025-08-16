@@ -36,7 +36,7 @@ export const addProductToCart = asyncHandler(async (req, res, next) => {
     // Create new cart
     cart = await Cart.create({
       user: req.user._id,
-      cartItems: [{ product: productId, price: product.price, quantity: 1 }],
+      cartItems: [{ product: productId, price: product.price, quantity: 1, store: product.store, images: product.images, unit: product.unit }],
     });
   } else {
     // Check if product exists in cart
@@ -50,9 +50,12 @@ export const addProductToCart = asyncHandler(async (req, res, next) => {
     } else {
       // Product does not exist -> add new
       cart.cartItems.push({
+        store: product.store,
         product: productId,
         price: product.price,
         quantity: 1,
+        images: product.images,
+        unit: product.unit
       });
     }
   }
@@ -63,13 +66,18 @@ export const addProductToCart = asyncHandler(async (req, res, next) => {
   await cart.populate([
     {
       path: 'cartItems.product',
-      select: 'name _id',
+      select: 'name _id store images unit',
+      populate: {
+        path: 'store',
+        select: 'name _id'
+      }      
     },
     {
       path: 'user',
       select: 'name _id',
     },
   ]);
+
 
   await cart.save();
 
@@ -88,7 +96,11 @@ export const getLoggedUserCart = asyncHandler(async (req, res, next) => {
     const cart = await Cart.findOne({ user: req.user._id })
     .populate([{
         path: 'cartItems.product',
-        select: 'name _id images unit' 
+        select: 'name _id images unit store',
+        populate: {
+          path: 'store',
+          select: 'name _id'
+        }
       },{
         path: 'user',
         select: 'name _id'

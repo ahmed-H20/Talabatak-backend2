@@ -41,6 +41,9 @@ export const sanitizeCart = (cart) => {
       product: {
         id: item.product?._id?.toString() || null,
         name: item.product?.name || null,
+        store: item.product.store || null,
+        images: item.product.images || null,
+        unit: item.product.unit
       },
       quantity: item.quantity || 1,
       price: item.price || 0,

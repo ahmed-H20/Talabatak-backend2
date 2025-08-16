@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const orderItemSchema = mongoose.Schema(
+const orderItemSchema = new mongoose.Schema(
   {
     product: {
       type: mongoose.Schema.Types.ObjectId,
@@ -13,7 +13,7 @@ const orderItemSchema = mongoose.Schema(
   { _id: false }
 );
 
-const orderSchema = mongoose.Schema(
+const orderSchema = new mongoose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
@@ -26,10 +26,37 @@ const orderSchema = mongoose.Schema(
       required: true,
     },
     orderItems: [orderItemSchema],
+
+    // عنوان العميل وإحداثياته وقت الطلب
     deliveryAddress: {
       type: String,
       required: true,
     },
+    deliveryLocation: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        required: true,
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        required: true,
+      },
+    },
+
+    // إحداثيات المتجر وقت الطلب (snapshot)
+    storeLocation: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        required: true,
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        required: true,
+      },
+    },
+
     deliveryFee: {
       type: Number,
       default: 0,
@@ -41,10 +68,7 @@ const orderSchema = mongoose.Schema(
     appliedCoupon: String,
     subtotal: Number,
     discountAmount: { type: Number, default: 0 },
-    groupOrderId: {
-      type: String,
-      required: false,
-    },
+    groupOrderId: String,
     status: {
       type: String,
       enum: ["pending", "processing", "delivered", "cancelled"],
@@ -53,5 +77,9 @@ const orderSchema = mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// علشان نقدر نعمل حساب مسافة
+orderSchema.index({ deliveryLocation: "2dsphere" });
+orderSchema.index({ storeLocation: "2dsphere" });
 
 export const Order = mongoose.model("Order", orderSchema);

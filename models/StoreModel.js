@@ -28,11 +28,16 @@ const storeSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
-  location: {
-    address: { type: String },
+   location: {
+    address: { type: String, required: true },
+    type: {
+      type: String,
+      enum: ['Point'],
+      required: true
+    },
     coordinates: {
-      lat: { type: Number },
-      lng: { type: Number }
+      type: [Number], // [longitude, latitude]
+      required: true
     }
   },
   phone:{
@@ -60,6 +65,8 @@ const storeSchema = new mongoose.Schema({
   },
   workingHours: [dayTimeSchema],
 }, { timestamps: true });
+
+storeSchema.index({ location: '2dsphere' });
 
 const Store = mongoose.models.Store || mongoose.model('Store', storeSchema);
 export default Store;

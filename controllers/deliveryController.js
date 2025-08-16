@@ -104,7 +104,6 @@ export const getDeliveryApplications = asyncHandler(async (req, res) => {
   }
 
   const applications = await DeliveryRequest.find(filter)
-    .populate('user', 'name email')
     .populate('approvedBy', 'name')
     .sort({ createdAt: -1 })
     .limit(limit * 1)
