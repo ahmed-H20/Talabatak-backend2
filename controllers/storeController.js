@@ -172,7 +172,6 @@ export const getNearbyStores = asyncHandler(async (req, res) => {
 
   const userLocation = { lat: parseFloat(lat), lng: parseFloat(lng) };
   
-  // Validate user coordinates
   if (isNaN(userLocation.lat) || isNaN(userLocation.lng)) {
     res.status(400);
     throw new Error('Invalid latitude or longitude values');
@@ -182,43 +181,22 @@ export const getNearbyStores = asyncHandler(async (req, res) => {
 
   // Get all open stores
   const allStores = await Store.find({ isOpen: true });
-  console.log(`Found ${allStores.length} open stores`);
 
-  // Debug: Log all store coordinates
-  allStores.forEach(store => {
-    const coords = getStoreCoordinates(store);
-    console.log(`Store: ${store.name}, City: ${store.city}, Coords: ${coords ? `[${coords.lng}, ${coords.lat}]` : 'None'}, Delivery Range: ${store.deliveryRangeKm}km`);
-  });
-
-  // Filter nearby stores with proper coordinate validation
+  // Filter nearby stores only by distance
   const nearbyStores = allStores.filter((store) => {
-    try {
-      const storeCoords = getStoreCoordinates(store);
-      
-      if (!storeCoords) {
-        return false;
-      }
-      
-      const distance = calculateDistance(
-        userLocation.lat, 
-        userLocation.lng, 
-        storeCoords.lat, 
-        storeCoords.lng
-      );
-      
-      const deliveryRange = store.deliveryRangeKm || 10;
-      const isInRange = distance <= deliveryRange;
-      
-      console.log(`Store: ${store.name}, Distance: ${distance.toFixed(2)}km, Delivery Range: ${deliveryRange}km, In Range: ${isInRange}`);
-      
-      return isInRange;
-    } catch (error) {
-      console.error(`Error processing store ${store.name}:`, error);
-      return false;
-    }
-  });
+    const storeCoords = getStoreCoordinates(store);
+    if (!storeCoords) return false;
 
-  console.log(`Found ${nearbyStores.length} nearby stores`);
+    const distance = calculateDistance(
+      userLocation.lat, 
+      userLocation.lng, 
+      storeCoords.lat, 
+      storeCoords.lng
+    );
+    
+    const deliveryRange = store.deliveryRangeKm || 10;
+    return distance <= deliveryRange;
+  });
 
   if (nearbyStores.length > 0) {
     const storeIds = nearbyStores.map(store => store._id);
@@ -228,8 +206,6 @@ export const getNearbyStores = asyncHandler(async (req, res) => {
     .populate('category', 'name')
     .populate('subCategory', 'name')
     .populate('store', 'name');
-
-    console.log(`Found ${nearbyProducts.length} products from nearby stores`);
 
     const processedProducts = nearbyProducts.map(product => {
       const discount = product.discount || 0;
@@ -259,81 +235,14 @@ export const getNearbyStores = asyncHandler(async (req, res) => {
     });
   }
 
-  // Fallback to city-based search with improved city detection
-  console.log("No nearby stores found, falling back to city search");
-  
-  try {
-    const userCity = await determineCityFromCoordinates(userLocation.lat, userLocation.lng);
-    console.log(`User city detected as: ${userCity}`);
-    
-    // Try exact city match first
-    let fallbackStores = await Store.find({ city: userCity, isOpen: true });
-    console.log(`Found ${fallbackStores.length} stores in exact city match: ${userCity}`);
-    
-    // If no exact match, try finding stores in nearby cities or broader search
-    if (fallbackStores.length === 0) {
-      console.log("No exact city match, trying broader search...");
-      
-      // Get all open stores and find the closest ones by city name similarity or region
-      const allOpenStores = await Store.find({ isOpen: true });
-      
-      // For Ismailia coordinates, also check for stores in similar regions
-      const alternativeCities = ['الإسماعيلية', 'السويس', 'بورسعيد', 'القاهرة'];
-      fallbackStores = await Store.find({ 
-        city: { $in: alternativeCities }, 
-        isOpen: true 
-      });
-      
-      console.log(`Found ${fallbackStores.length} stores in alternative cities: ${alternativeCities.join(', ')}`);
-    }
-    
-    const fallbackStoreIds = fallbackStores.map(store => store._id);
-    
-    const fallbackProducts = await Product.find({ 
-      store: { $in: fallbackStoreIds } 
-    })
-    .populate('category', 'name')
-    .populate('subCategory', 'name')
-    .populate('store', 'name');
-
-    console.log(`Found ${fallbackProducts.length} products from fallback stores`);
-
-    const processedFallbackProducts = fallbackProducts.map(product => {
-      const discount = product.discount || 0;
-      const discountedPrice = +(product.price * (1 - discount / 100)).toFixed(2);
-      
-      return {
-        _id: product._id,
-        name: product.name,
-        description: product.description,
-        images: product.images,
-        price: product.price,
-        quantity: product.quantity,
-        discount: product.discount,
-        unit: product.unit,
-        category: product.category,
-        subCategory: product.subCategory,
-        discountedPrice,
-        storeId: product.store._id,
-        storeName: product.store.name
-      };
-    });
-
-    res.status(200).json({
-      message: fallbackStores.length > 0 ? 'Fallback to city stores' : 'No stores found in area',
-      detectedCity: userCity,
-      stores: fallbackStores,
-      products: processedFallbackProducts,
-    });
-  } catch (fallbackError) {
-    console.error('Fallback error:', fallbackError);
-    res.status(200).json({
-      message: 'No stores found',
-      stores: [],
-      products: [],
-    });
-  }
+  // لو مفيش متاجر جوه الرينج -> مايرجعش حاجة
+  return res.status(200).json({
+    message: 'No nearby stores found in range',
+    stores: [],
+    products: [],
+  });
 });
+
 
 // @desc    Update store
 export const updateStore = asyncHandler(async (req, res) => {
