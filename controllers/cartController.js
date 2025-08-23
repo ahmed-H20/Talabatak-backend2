@@ -19,7 +19,7 @@ const calcTotalCartPrice = (cart) => {
 // @access  Private/User
 export const addProductToCart = asyncHandler(async (req, res, next) => {
   const { productId } = req.body;
-
+  console.log(productId);
   if (!productId) {
     return res.status(400).json('Product ID is required');
   }

@@ -50,18 +50,36 @@ export const sanitizeCoupon = (coupon) => {
 export const sanitizeCart = (cart) => {
   return {
     id: cart._id?.toString() || null,
-    cartItems: cart.cartItems?.map(item => ({
-      id: item._id?.toString() || null,
-      product: {
-        id: item.product?._id?.toString() || null,
-        name: item.product?.name || null,
-        store: item.product.store || null,
-        images: item.product.images || null,
-        unit: item.product.unit
-      },
-      quantity: item.quantity || 1,
-      price: item.price || 0,
-    })) || [],
+    cartItems: cart.cartItems?.map(item => {
+      // Check if product exists before accessing its properties
+      if (!item.product) {
+        return {
+          id: item._id?.toString() || null,
+          product: {
+            id: null,
+            name: "منتج محذوف",
+            store: null,
+            images: [],
+            unit: "قطعة"
+          },
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+        };
+      }
+
+      return {
+        id: item._id?.toString() || null,
+        product: {
+          id: item.product._id?.toString() || null,
+          name: item.product.name || "منتج غير محدد",
+          store: item.product.store || null,
+          images: item.product.images || [],
+          unit: item.product.unit || "قطعة"
+        },
+        quantity: item.quantity || 1,
+        price: item.price || 0,
+      };
+    }).filter(item => item.product.id !== null) || [], // Optional: Remove deleted products
     totalCartPrice: cart.totalCartPrice || 0,
     totalPriceAfterDiscount: cart.totalPriceAfterDiscount || 0,
     user: {
