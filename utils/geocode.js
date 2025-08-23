@@ -1,7 +1,7 @@
 export const getCityNameFromCoordinates = async (lat, lng) => {
   try {
     const response = await fetch(
-      `http://localhost:5000/api/location/get-city?lat=${lat}&lng=${lng}`
+      `https://talabatak-backend2.vercel.app/api/location/get-city?lat=${lat}&lng=${lng}`
     );
 
     if (!response.ok) throw new Error("Failed to fetch city name");
