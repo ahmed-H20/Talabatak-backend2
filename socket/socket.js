@@ -3,9 +3,16 @@ let io;
 export const initSocket = async(server) => {
   const { Server } = await import("socket.io");
   io = new Server(server, {
-    cors: {
-      origin: "*",
+    ors: {
+      origin: [
+        "http://localhost:3000",
+        "http://localhost:5173", 
+        "https://your-frontend-domain.com", // Add your actual frontend domain
+        "https://talabatak-backend2.vercel.app" // If frontend is also on Vercel
+      ],
       methods: ["GET", "POST"],
+      credentials: true,
+      allowedHeaders: ["Content-Type", "Authorization"]
     },
   });
 
