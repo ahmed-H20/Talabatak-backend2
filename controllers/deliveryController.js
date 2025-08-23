@@ -5,6 +5,59 @@ import { Order } from '../models/orderModel.js';
 import { DeliveryRequest, DeliveryAssignment } from '../models/deliveryModel.js';
 import { getIO } from '../socket/socket.js';
 import { sendEmail } from '../utils/emails.js';
+import { notifyOrderAccepted, notifyDeliveryPersonAvailable, getDeliveryQueueStats } from '../services/deliveryQueueService.js'
+import mongoose from 'mongoose';
+
+
+export const getDeliveryQueueDashboard = asyncHandler(async (req, res) => {
+  const stats = getDeliveryQueueStats();
+  
+  // Get additional metrics
+  const totalActiveDeliveryPersons = await User.countDocuments({
+    role: 'delivery',
+    'deliveryInfo.isAvailable': true,
+    deliveryStatus: 'approved'
+  });
+
+  const recentFailures = await Order.countDocuments({
+    status: 'delivery_failed',
+    createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } // Last 24 hours
+  });
+
+  const averageResponseTime = await DeliveryAssignment.aggregate([
+    {
+      $match: {
+        acceptedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        avgResponseTime: {
+          $avg: {
+            $divide: [
+              { $subtract: ['$acceptedAt', '$assignedAt'] },
+              1000 * 60 // Convert to minutes
+            ]
+          }
+        }
+      }
+    }
+  ]);
+
+  res.status(200).json({
+    queueStats: stats,
+    activeDeliveryPersons: totalActiveDeliveryPersons,
+    recentFailures: recentFailures,
+    averageResponseTimeMinutes: averageResponseTime[0]?.avgResponseTime || 0,
+    systemHealth: {
+      status: stats.criticalOrders > 5 ? 'warning' : 'good',
+      message: stats.criticalOrders > 5 ? 
+        `${stats.criticalOrders} orders need immediate attention` : 
+        'All systems operating normally'
+    }
+  });
+});
 
 // @desc    Register as delivery person
 // @route   POST /api/delivery/register
@@ -270,7 +323,8 @@ export const rejectDeliveryApplication = asyncHandler(async (req, res) => {
 // @access  Private (Delivery)
 export const getAvailableOrders = asyncHandler(async (req, res) => {
   const deliveryPersonId = req.user._id;
-  const { page = 1, limit = 10, maxDistance = 10000 } = req.query;
+  const { page = 1, limit = 10, maxDistance = 10000, target = "store" } = req.query;
+  // target = "store" | "delivery"   (تحدد عايز تقيس بالنسبة لأي نقطة)
 
   // Check if delivery person is approved
   const deliveryPerson = await User.findById(deliveryPersonId);
@@ -291,7 +345,7 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
 
   // Find orders that are ready for delivery and not assigned to anyone
   const baseFilter = {
-    status: { $in: ['ready_for_pickup', 'processing'] }
+    status: { $in: ['ready_for_pickup', 'processing', 'pending'] }
   };
 
   // Check if order is not already assigned
@@ -302,19 +356,22 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
   baseFilter._id = { $nin: assignedOrderIds };
 
   if (deliveryPerson.geoLocation && deliveryPerson.geoLocation.coordinates) {
+    // حدد أي فيلد هيتعمل عليه geo query
+    const geoField = target === "delivery" ? "deliveryLocation" : "storeLocation";
+
     // Find orders near delivery person location using geospatial query
     availableOrders = await Order.find({
       ...baseFilter,
-      'store.location': {
+      [geoField]: {
         $near: {
           $geometry: deliveryPerson.geoLocation,
-          $maxDistance: maxDistance
+          $maxDistance: Number(maxDistance)
         }
       }
     })
     .populate([
       { path: 'user', select: 'name phone location city' },
-      { path: 'store', select: 'name location phone city' },
+      { path: 'store', select: 'name phone city' }, // location مش ضروري هنا
       { path: 'orderItems.product', select: 'name images' }
     ])
     .sort({ priority: -1, createdAt: 1 });
@@ -323,7 +380,7 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
     availableOrders = await Order.find(baseFilter)
     .populate([
       { path: 'user', select: 'name phone location city' },
-      { path: 'store', select: 'name location phone city' },
+      { path: 'store', select: 'name phone city' },
       { path: 'orderItems.product', select: 'name images' }
     ])
     .sort({ priority: -1, createdAt: 1 });
@@ -351,85 +408,344 @@ export const getAvailableOrders = asyncHandler(async (req, res) => {
   });
 });
 
+
 // @desc    Accept delivery order
 // @route   PATCH /api/delivery/accept-order/:orderId
 // @access  Private (Delivery)
+// Enhanced accept delivery order with atomic operations
 export const acceptDeliveryOrder = asyncHandler(async (req, res) => {
   const { orderId } = req.params;
   const deliveryPersonId = req.user._id;
 
-  // Check if delivery person is approved
+  const session = await mongoose.startSession();
+  
+  let updatedOrder, deliveryAssignment, deliveryPerson;
+
+  try {
+    await session.withTransaction(async () => {
+      // ✅ Check delivery person
+      deliveryPerson = await User.findById(deliveryPersonId).session(session);
+      if (deliveryPerson.role !== 'delivery' || deliveryPerson.deliveryStatus !== 'approved') {
+        throw new Error('غير مصرح لك بقبول الطلبات');
+      }
+
+      if (!deliveryPerson.deliveryInfo?.isAvailable) {
+        throw new Error('يجب تفعيل حالة الإتاحة لقبول الطلبات');
+      }
+
+      // ✅ Find order
+      const order = await Order.findById(orderId)
+        .populate('user', 'name phone')
+        .populate('store', 'name phone location')
+        .session(session);
+
+      if (!order) throw new Error('الطلب غير موجود');
+
+      if (!['ready_for_pickup', 'processing', 'pending'].includes(order.status)) {
+        throw new Error('هذا الطلب غير متاح للتوصيل');
+      }
+
+      // ✅ Check assignment
+      const existingAssignment = await DeliveryAssignment.findOne({
+        order: orderId,
+        status: { $in: ['assigned', 'accepted', 'picked_up', 'on_the_way'] }
+      }).session(session);
+
+      if (existingAssignment) {
+        throw new Error('هذا الطلب مخصص لمندوب آخر بالفعل');
+      }
+
+      // ✅ Create assignment
+      deliveryAssignment = await DeliveryAssignment.create([{
+        order: orderId,
+        deliveryPerson: deliveryPersonId,
+        status: 'accepted',
+        acceptedAt: new Date(),
+        estimatedDeliveryTime: new Date(Date.now() + 45 * 60 * 1000)
+      }], { session });
+
+      // ✅ Update order status
+      order.status = 'assigned_to_delivery';
+      order.assignedDeliveryPerson = deliveryPersonId;
+      order.assignedAt = new Date();
+      updatedOrder = await order.save({ session });
+
+      await clearOrderTimeout(orderId);
+    });
+
+    // ✅ بعد الـ transaction خلصت، هات الـ order من غير session عشان يبان التحديث
+    updatedOrder = await Order.findById(orderId)
+      .populate('user', 'name phone')
+      .populate('store', 'name phone location');
+
+    // ✅ ابعت socket زي دالة admin
+    const io = getIO();
+    io.emit("orderStatusUpdated", updatedOrder);
+
+    // notify user
+    io.to(`user_${updatedOrder.user._id}`).emit('orderAssignedToDelivery', {
+      orderId: updatedOrder._id,
+      deliveryPerson: { name: deliveryPerson.name, phone: deliveryPerson.phone },
+      message: 'تم تخصيص طلبك لمندوب التوصيل'
+    });
+
+    io.emit('orderTaken', { orderId: updatedOrder._id });
+
+    res.status(200).json({
+      message: 'تم قبول الطلب بنجاح',
+      order: updatedOrder
+    });
+
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  } finally {
+    await session.endSession();
+  }
+});
+
+// Store for order timeouts (in production, use Redis)
+const orderTimeouts = new Map();
+
+// Set timeout for order auto-reassignment
+export const setOrderTimeout = (orderId, timeoutMinutes = 15) => {
+  const timeoutId = setTimeout(async () => {
+    try {
+      await handleOrderTimeout(orderId);
+    } catch (error) {
+      console.error('Error handling order timeout:', error);
+    }
+  }, timeoutMinutes * 60 * 1000);
+
+  orderTimeouts.set(orderId.toString(), timeoutId);
+  console.log(`Order timeout set for ${orderId} - ${timeoutMinutes} minutes`);
+};
+
+// Clear timeout for order
+export const clearOrderTimeout = (orderId) => {
+  const timeoutId = orderTimeouts.get(orderId.toString());
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    orderTimeouts.delete(orderId.toString());
+    console.log(`Order timeout cleared for ${orderId}`);
+  }
+};
+
+// Handle order timeout - reassign or mark as failed
+export const handleOrderTimeout = async (orderId) => {
+  try {
+    console.log(`Handling timeout for order ${orderId}`);
+    
+    const order = await Order.findById(orderId)
+      .populate('user', 'name phone email')
+      .populate('store', 'name phone');
+
+    if (!order) {
+      console.log(`Order ${orderId} not found during timeout handling`);
+      return;
+    }
+
+    // Check if order is still unassigned
+    const assignment = await DeliveryAssignment.findOne({
+      order: orderId,
+      status: { $in: ['accepted', 'picked_up', 'on_the_way', 'delivered'] }
+    });
+
+    if (assignment) {
+      console.log(`Order ${orderId} already assigned, skipping timeout handling`);
+      return;
+    }
+
+    // Count how many times this order has been timed out
+    const timeoutCount = order.timeoutCount || 0;
+    
+    if (timeoutCount >= 3) {
+      // After 3 timeouts, mark order as failed and refund customer
+      order.status = 'delivery_failed';
+      order.failureReason = 'لا يوجد مندوبين متاحين في منطقتك';
+      order.failedAt = new Date();
+      await order.save();
+
+      // Notify customer and admin
+      const io = getIO();
+      io.to(`user_${order.user._id}`).emit('orderDeliveryFailed', {
+        orderId: order._id,
+        message: 'نأسف، لم نتمكن من العثور على مندوب توصيل متاح. سيتم استرداد المبلغ خلال 24 ساعة.',
+        refundAmount: order.totalPrice
+      });
+
+      // Send email notification
+      if (order.user.email) {
+        await sendEmail({
+          to: order.user.email,
+          subject: 'فشل في التوصيل - سيتم الاسترداد',
+          html: `
+            <h2>نأسف لعدم توفر خدمة التوصيل</h2>
+            <p>عزيزي ${order.user.name},</p>
+            <p>نأسف لإبلاغك بأنه لم يتمكن أي من مندوبي التوصيل من قبول طلبك رقم ${order._id}</p>
+            <p><strong>سبب الفشل:</strong> عدم توفر مندوبين في منطقتك</p>
+            <p><strong>المبلغ المسترد:</strong> ${order.totalPrice} جنيه</p>
+            <p>سيتم استرداد المبلغ إلى طريقة الدفع المستخدمة خلال 24 ساعة.</p>
+            <p>نعتذر عن الإزعاج ونتطلع لخدمتك مرة أخرى.</p>
+          `
+        });
+      }
+
+      console.log(`Order ${orderId} marked as delivery failed after ${timeoutCount + 1} timeouts`);
+      
+    } else {
+      // Increment timeout count and reassign with higher priority
+      order.timeoutCount = timeoutCount + 1;
+      order.priority = (order.priority || 0) + 1; // Increase priority
+      order.lastTimeoutAt = new Date();
+      await order.save();
+
+      // Notify available delivery persons with higher urgency
+      const io = getIO();
+      const availableDeliveryPersons = await User.find({
+        role: 'delivery',
+        'deliveryInfo.isAvailable': true,
+        deliveryStatus: 'approved'
+      });
+
+      availableDeliveryPersons.forEach(deliveryPerson => {
+        io.to(`user_${deliveryPerson._id}`).emit('urgentOrderAvailable', {
+          orderId: order._id,
+          message: `طلب عاجل! العميل ينتظر منذ ${(timeoutCount + 1) * 15} دقيقة`,
+          bonusFee: 10 * (timeoutCount + 1), // Increase bonus with each timeout
+          priority: order.priority
+        });
+      });
+
+      // Set another timeout
+      setOrderTimeout(orderId, 15);
+      
+      console.log(`Order ${orderId} reassigned with higher priority (timeout #${timeoutCount + 1})`);
+    }
+
+  } catch (error) {
+    console.error(`Error handling timeout for order ${orderId}:`, error);
+  }
+};
+
+// Enhanced order creation to set initial timeout
+export const createOrderWithTimeout = async (orderData) => {
+  try {
+    const order = new Order(orderData);
+    await order.save();
+
+    // Set initial timeout of 15 minutes for delivery assignment
+    setOrderTimeout(order._id, 15);
+
+    return order;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// Get available orders with timeout information
+export const getAvailableOrdersEnhanced = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { page = 1, limit = 10, maxDistance = 10000 } = req.query;
+
+  // Check if delivery person is approved and available
   const deliveryPerson = await User.findById(deliveryPersonId);
   if (deliveryPerson.role !== 'delivery' || deliveryPerson.deliveryStatus !== 'approved') {
-    return res.status(403).json({ message: 'غير مصرح لك بقبول الطلبات' });
-  }
-
-  const order = await Order.findById(orderId)
-    .populate('user', 'name phone')
-    .populate('store', 'name phone location');
-    
-  if (!order) {
-    return res.status(404).json({ message: 'الطلب غير موجود' });
-  }
-
-  // Check if order is already assigned
-  const existingAssignment = await DeliveryAssignment.findOne({ order: orderId });
-  if (existingAssignment) {
-    return res.status(400).json({ message: 'هذا الطلب مخصص لمندوب آخر بالفعل' });
-  }
-
-  if (!['ready_for_pickup', 'processing'].includes(order.status)) {
-    return res.status(400).json({ message: 'هذا الطلب غير متاح للتوصيل' });
-  }
-
-  // Create delivery assignment
-  const deliveryAssignment = new DeliveryAssignment({
-    order: orderId,
-    deliveryPerson: deliveryPersonId,
-    status: 'accepted',
-    acceptedAt: new Date()
-  });
-
-  await deliveryAssignment.save();
-
-  // Update order status
-  order.status = 'assigned_to_delivery';
-  await order.save();
-
-  // Notify customer and admin
-  const io = getIO();
-  io.to(`user_${order.user._id}`).emit('orderAssignedToDelivery', {
-    orderId: order._id,
-    deliveryPerson: {
-      name: deliveryPerson.name,
-      phone: deliveryPerson.phone
-    },
-    message: 'تم تخصيص طلبك لمندوب التوصيل'
-  });
-
-  // Notify admins
-  const admins = await User.find({ role: 'admin' });
-  admins.forEach(admin => {
-    io.to(`user_${admin._id}`).emit('orderAcceptedByDelivery', {
-      orderId: order._id,
-      deliveryPersonName: deliveryPerson.name,
-      customerName: order.user.name
+    return res.status(403).json({ 
+      message: 'غير مصرح لك بعرض الطلبات، يجب الموافقة على طلب التوصيل أولاً' 
     });
+  }
+
+  if (!deliveryPerson.deliveryInfo?.isAvailable) {
+    return res.status(400).json({ 
+      message: 'يجب تفعيل حالة الإتاحة لعرض الطلبات المتاحة' 
+    });
+  }
+
+  // Find orders that are ready for delivery and not assigned
+  const baseFilter = {
+    status: { $in: ['ready_for_pickup', 'processing', 'pending'] }
+  };
+
+  // Exclude already assigned orders
+  const assignedOrderIds = await DeliveryAssignment.find({
+    status: { $in: ['accepted', 'picked_up', 'on_the_way'] }
+  }).distinct('order');
+
+  baseFilter._id = { $nin: assignedOrderIds };
+
+  let availableOrders = await Order.find(baseFilter)
+    .populate([
+      { path: 'user', select: 'name phone location city' },
+      { path: 'store', select: 'name location phone city' },
+      { path: 'orderItems.product', select: 'name images' }
+    ])
+    .sort({ 
+      priority: -1, // High priority first
+      createdAt: 1   // Older orders first
+    });
+
+  // Add timeout information and urgency indicators
+  const ordersWithTimeouts = availableOrders.map(order => {
+    const timeoutCount = order.timeoutCount || 0;
+    const minutesWaiting = order.createdAt ? 
+      Math.floor((Date.now() - order.createdAt.getTime()) / (1000 * 60)) : 0;
+
+    return {
+      ...order.toObject(),
+      urgency: timeoutCount > 0 ? 'high' : minutesWaiting > 10 ? 'medium' : 'normal',
+      minutesWaiting,
+      bonusFee: timeoutCount > 0 ? 10 * timeoutCount : 0,
+      timeoutCount
+    };
   });
+
+  // Apply location filtering if available
+  if (deliveryPerson.geoLocation && deliveryPerson.geoLocation.coordinates) {
+    // This would require updating your existing location-based filtering logic
+  }
+
+  // Pagination
+  const startIndex = (page - 1) * limit;
+  const endIndex = page * limit;
+  const paginatedOrders = ordersWithTimeouts.slice(startIndex, endIndex);
 
   res.status(200).json({
-    message: 'تم قبول الطلب بنجاح',
-    order: {
-      id: order._id,
-      status: order.status,
-      customer: order.user.name,
-      store: order.store.name,
-      totalPrice: order.totalPrice,
-      deliveryAddress: order.deliveryAddress,
-      assignedAt: deliveryAssignment.assignedAt
-    }
+    orders: paginatedOrders,
+    totalOrders: ordersWithTimeouts.length,
+    totalPages: Math.ceil(ordersWithTimeouts.length / limit),
+    currentPage: parseInt(page),
+    hasMore: endIndex < ordersWithTimeouts.length
   });
 });
+
+// Cleanup function for expired timeouts (call periodically)
+export const cleanupExpiredTimeouts = async () => {
+  try {
+    // Find orders that should have timed out but still have active timeouts
+    const expiredOrders = await Order.find({
+      status: { $in: ['ready_for_pickup', 'processing', 'pending'] },
+      createdAt: { $lt: new Date(Date.now() - 60 * 60 * 1000) }, // 1 hour old
+      $or: [
+        { 'assignedDeliveryPerson': { $exists: false } },
+        { 'assignedDeliveryPerson': null }
+      ]
+    });
+
+    for (const order of expiredOrders) {
+      if (!orderTimeouts.has(order._id.toString())) {
+        // Re-set timeout for orphaned orders
+        setOrderTimeout(order._id, 1); // 1 minute timeout for cleanup
+      }
+    }
+
+    console.log(`Cleanup completed. Found ${expiredOrders.length} orders to process.`);
+  } catch (error) {
+    console.error('Error during timeout cleanup:', error);
+  }
+};
+
+// Run cleanup every 30 minutes
+setInterval(cleanupExpiredTimeouts, 30 * 60 * 1000);
 
 // @desc    Update delivery status
 // @route   PATCH /api/delivery/update-status/:orderId
@@ -493,6 +809,13 @@ export const updateDeliveryStatus = asyncHandler(async (req, res) => {
     on_the_way: 'مندوب التوصيل في الطريق إليك',
     delivered: 'تم تسليم طلبك بنجاح'
   };
+
+  const updatedOrder = await Order.findById(orderId)
+      .populate('user', 'name phone')
+      .populate('store', 'name phone location');
+
+  io.emit("orderStatusUpdated", updatedOrder);
+
 
   // Notify customer
   io.to(`user_${order.user._id}`).emit('deliveryStatusUpdated', {
@@ -748,3 +1071,92 @@ export const updateDeliveryLocation = asyncHandler(async (req, res) => {
 
   res.status(200).json({ message: 'تم تحديث الموقع بنجاح' });
 });
+
+
+export const toggleAvailabilityEnhanced = asyncHandler(async (req, res) => {
+  const deliveryPersonId = req.user._id;
+  const { isAvailable } = req.body;
+
+  const deliveryPerson = await User.findByIdAndUpdate(
+    deliveryPersonId,
+    { 'deliveryInfo.isAvailable': isAvailable },
+    { new: true }
+  );
+
+  // If becoming available, notify the queue system
+  if (isAvailable) {
+    notifyDeliveryPersonAvailable(deliveryPersonId);
+  }
+
+  res.status(200).json({
+    message: `تم ${isAvailable ? 'تفعيل' : 'إيقاف'} حالة الإتاحة`,
+    isAvailable: deliveryPerson.deliveryInfo.isAvailable
+  });
+});
+
+export const setupDeliverySocketHandlers = (io) => {
+  io.on('connection', (socket) => {
+    // Handle delivery person joining
+    socket.on('joinDeliveryRoom', (deliveryPersonId) => {
+      socket.join(`delivery_${deliveryPersonId}`);
+      console.log(`Delivery person ${deliveryPersonId} joined room`);
+    });
+
+    // Handle delivery person location updates
+    socket.on('updateLocation', async (data) => {
+      const { deliveryPersonId, coordinates, accuracy } = data;
+      
+      try {
+        await User.findByIdAndUpdate(deliveryPersonId, {
+          geoLocation: {
+            type: 'Point',
+            coordinates: coordinates
+          },
+          'deliveryInfo.lastLocationUpdate': new Date(),
+          'deliveryInfo.locationAccuracy': accuracy
+        });
+
+        // Broadcast location update to relevant orders
+        socket.broadcast.emit('deliveryPersonLocationUpdate', {
+          deliveryPersonId,
+          coordinates
+        });
+      } catch (error) {
+        console.error('Error updating delivery person location:', error);
+      }
+    });
+
+    // Handle order acceptance race condition
+    socket.on('attemptOrderAcceptance', async (data) => {
+      const { orderId, deliveryPersonId } = data;
+      
+      try {
+        // Use the enhanced atomic acceptance function
+        const result = await acceptOrderAtomically(orderId, deliveryPersonId);
+        
+        if (result.success) {
+          socket.emit('orderAcceptanceConfirmed', {
+            orderId: orderId,
+            message: 'تم قبول الطلب بنجاح'
+          });
+          
+          // Notify other delivery persons
+          socket.broadcast.emit('orderTaken', { orderId: orderId });
+          
+          // Notify queue system
+          notifyOrderAccepted(orderId, deliveryPersonId);
+        } else {
+          socket.emit('orderAcceptanceRejected', {
+            orderId: orderId,
+            reason: result.reason
+          });
+        }
+      } catch (error) {
+        socket.emit('orderAcceptanceError', {
+          orderId: orderId,
+          error: error.message
+        });
+      }
+    });
+  });
+};

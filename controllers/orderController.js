@@ -7,13 +7,132 @@ import {ORDER_NOTIFICATION_TEMPLATE} from "../utils/emailTemplates.js";
 import { sendEmail } from "../utils/emails.js";
 import { getIO } from "../socket/socket.js"; // Import Socket.IO i
 import Store from "../models/StoreModel.js"
-
+import { addOrderToDeliveryQueue } from '../services/deliveryQueueService.js';
 
 // Create orders from cart items
+// export const createOrdersFromCart = async (req, res) => {
+//   try {
+//     const { cartItems, deliveryAddress, deliveryCoordinates } = req.body;
+//     const userId = req.user._id; 
+//     const io = getIO();
+
+//     if (!cartItems || cartItems.length === 0) {
+//       return res.status(400).json({ message: "Cart is empty" });
+//     }
+
+//     if (!deliveryCoordinates || deliveryCoordinates.length !== 2) {
+//       return res.status(400).json({ message: "Delivery coordinates are required [lng, lat]" });
+//     }
+
+//     const orders = [];
+
+//     // تقسيم الطلبات حسب المتجر
+//     const storesMap = {};
+//     for (const item of cartItems) {
+//       if (!storesMap[item.store]) {
+//         storesMap[item.store] = [];
+//       }
+//       storesMap[item.store].push(item);
+//     }
+
+//     for (const storeId of Object.keys(storesMap)) {
+//       const store = await Store.findById(storeId);
+//       if (!store) continue;
+
+//       const storeLocationGeoJSON = {
+//         type: "Point",
+//         coordinates: store.location.coordinates
+//       };
+
+//       const deliveryFee = 30
+//       const totalPrice = storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30) +
+//         deliveryFee;
+
+//       const order = new Order({
+//         user: userId,
+//         store: storeId,
+//         orderItems: storesMap[storeId].map(i => ({
+//           product: i.product,
+//           quantity: i.quantity,
+//           price: i.price,
+//         })),
+//         deliveryAddress,
+//         deliveryLocation: {
+//           type: "Point",
+//           coordinates: deliveryCoordinates // [lng, lat]
+//         },
+
+//         storeLocation: storeLocationGeoJSON,
+//         totalPrice: storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30)
+//       });
+
+//       await order.save();
+
+//       await addOrderToDeliveryQueue(order._id);
+
+//       const populatedOrder = await Order.findById(order._id)
+//         .populate({ path: "user", select : "name phone"})
+//         .populate({ path: "orderItems.product", select: "name images" })
+//         .populate({ path: "store", select: "name phone " });
+
+//       orders.push(populatedOrder);
+
+//       io.emit("orderCreated", populatedOrder);
+
+//       const orderItemsHtml = populatedOrder.orderItems
+//       .map(
+//         (item) => `
+//         <div class="order-item">
+//           <p>🛒 <strong>Product:</strong> ${item.product?.name || "Unknown"}</p>
+//           <p>📦 <strong>Quantity:</strong> ${item.quantity}</p>
+//           <p>💰 <strong>Price:</strong> ${item.price} EGP</p>
+//         </div>
+//       `
+//       )
+//       .join("");
+
+//       const emailHtml = ORDER_NOTIFICATION_TEMPLATE
+//       .replace("{customerName}", req.user.name)
+//       .replace("{orderId}", order._id)
+//       .replace("{storeName}", populatedOrder.store.name)
+//       .replace("{deliveryAddress}", deliveryAddress)
+//       .replace("{orderItems}", orderItemsHtml)
+//       .replace("{deliveryFee}", 30)
+//       .replace("{totalPrice}", totalPrice);
+
+//       const admins = await User.find({ role: "admin", email: { $exists: true, $ne: "" } });
+
+//       for (const admin of admins) {
+//         const adminEmail = admin.email;
+//         console.log("Sending to admin:", adminEmail);
+      
+//         try {
+//           await sendEmail({
+//             to: adminEmail,
+//             subject: "New Order Received",
+//             html: emailHtml,
+//           });
+//         } catch (error) {
+//           console.error("Error sending to admin:", adminEmail, error.message);
+//         }
+//       }
+
+      
+
+    
+//   }
+
+     
+//     res.status(201).json({ orders });
+//   } catch (error) {
+//     console.error(error);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// };
 export const createOrdersFromCart = async (req, res) => {
   try {
     const { cartItems, deliveryAddress, deliveryCoordinates } = req.body;
-    const userId = req.user._id; 
+    const userId = req.user._id;
     const io = getIO();
 
     if (!cartItems || cartItems.length === 0) {
@@ -25,9 +144,9 @@ export const createOrdersFromCart = async (req, res) => {
     }
 
     const orders = [];
-
-    // تقسيم الطلبات حسب المتجر
     const storesMap = {};
+    
+    // Group items by store
     for (const item of cartItems) {
       if (!storesMap[item.store]) {
         storesMap[item.store] = [];
@@ -35,6 +154,7 @@ export const createOrdersFromCart = async (req, res) => {
       storesMap[item.store].push(item);
     }
 
+    // Create orders for each store
     for (const storeId of Object.keys(storesMap)) {
       const store = await Store.findById(storeId);
       if (!store) continue;
@@ -44,10 +164,10 @@ export const createOrdersFromCart = async (req, res) => {
         coordinates: store.location.coordinates
       };
 
-      const deliveryFee = 30
-      const totalPrice = storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30) +
-        deliveryFee;
+      const deliveryFee = 30;
+      const totalPrice = storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 0) + deliveryFee;
 
+      // Create order with enhanced fields
       const order = new Order({
         user: userId,
         store: storeId,
@@ -59,74 +179,111 @@ export const createOrdersFromCart = async (req, res) => {
         deliveryAddress,
         deliveryLocation: {
           type: "Point",
-          coordinates: deliveryCoordinates // [lng, lat]
+          coordinates: deliveryCoordinates
         },
-
         storeLocation: storeLocationGeoJSON,
-        totalPrice: storesMap[storeId].reduce((sum, i) => sum + i.price * i.quantity, 30)
+        totalPrice: totalPrice,
+        deliveryFee: deliveryFee,
+        status: 'pending',
+        priority: 0,
+        estimatedDeliveryTime: new Date(Date.now() + 45 * 60 * 1000) // 45 minutes
       });
 
       await order.save();
 
+      // Add to delivery queue for automatic assignment
+      await addOrderToDeliveryQueue(order._id);
+
       const populatedOrder = await Order.findById(order._id)
-        .populate({ path: "user", select : "name phone"})
+        .populate({ path: "user", select: "name phone" })
         .populate({ path: "orderItems.product", select: "name images" })
-        .populate({ path: "store", select: "name phone " });
+        .populate({ path: "store", select: "name phone" });
 
       orders.push(populatedOrder);
 
+      // Emit order created event
       io.emit("orderCreated", populatedOrder);
 
+      // Send admin notification emails
       const orderItemsHtml = populatedOrder.orderItems
-      .map(
-        (item) => `
-        <div class="order-item">
-          <p>🛒 <strong>Product:</strong> ${item.product?.name || "Unknown"}</p>
-          <p>📦 <strong>Quantity:</strong> ${item.quantity}</p>
-          <p>💰 <strong>Price:</strong> ${item.price} EGP</p>
-        </div>
-      `
-      )
-      .join("");
+        .map(item => `
+          <div class="order-item">
+            <p>🛒 <strong>Product:</strong> ${item.product?.name || "Unknown"}</p>
+            <p>📦 <strong>Quantity:</strong> ${item.quantity}</p>
+            <p>💰 <strong>Price:</strong> ${item.price} EGP</p>
+          </div>
+        `)
+        .join("");
 
       const emailHtml = ORDER_NOTIFICATION_TEMPLATE
-      .replace("{customerName}", req.user.name)
-      .replace("{orderId}", order._id)
-      .replace("{storeName}", populatedOrder.store.name)
-      .replace("{deliveryAddress}", deliveryAddress)
-      .replace("{orderItems}", orderItemsHtml)
-      .replace("{deliveryFee}", 30)
-      .replace("{totalPrice}", totalPrice);
+        .replace("{customerName}", req.user.name)
+        .replace("{orderId}", order._id)
+        .replace("{storeName}", populatedOrder.store.name)
+        .replace("{deliveryAddress}", deliveryAddress)
+        .replace("{orderItems}", orderItemsHtml)
+        .replace("{deliveryFee}", deliveryFee)
+        .replace("{totalPrice}", totalPrice);
 
       const admins = await User.find({ role: "admin", email: { $exists: true, $ne: "" } });
-
-      for (const admin of admins) {
-        const adminEmail = admin.email;
-        console.log("Sending to admin:", adminEmail);
       
+      for (const admin of admins) {
         try {
           await sendEmail({
-            to: adminEmail,
+            to: admin.email,
             subject: "New Order Received",
             html: emailHtml,
           });
         } catch (error) {
-          console.error("Error sending to admin:", adminEmail, error.message);
+          console.error("Error sending to admin:", admin.email, error.message);
         }
       }
+    }
 
-      
+    res.status(201).json({ 
+      orders,
+      message: "Orders created successfully. Delivery assignments in progress."
+    });
 
-    
-  }
-
-     
-    res.status(201).json({ orders });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// cansel order enhancment
+export const cancelOrderEnhanced = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) {
+    return res.status(404).json({ message: "Order not found" });
+  }
+
+  if (order.user.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ message: "Unauthorized" });
+  }
+
+  if (!["pending", "processing"].includes(order.status)) {
+    return res.status(400).json({ message: "Only pending orders can be cancelled" });
+  }
+
+  // Update order status
+  order.status = "cancelled";
+  await order.save();
+
+  // Notify queue system to remove from queue
+  notifyOrderCancelled(order._id);
+
+  // Real-time cancellation via Socket.IO
+  const io = getIO();
+  io.emit("orderCancelled", order);
+
+  const populatedOrder = await Order.findById(order._id)
+  .populate({ path: "user", select : "name phone"})
+  .populate({ path: "orderItems.product", select: "name images" })
+  .populate({ path: "store", select: "name phone" });
+  io.emit("orderStatusUpdated", populatedOrder);
+
+  res.status(200).json({ message: "Order cancelled", order });
+});
 
 
 // get user's orders
@@ -138,10 +295,15 @@ export const getMyOrders = asyncHandler(async (req, res) => {
   },
   {
     path: 'store',
-    select: 'name location ' // Populate the `store` field, only fetching `
-  }
-  , {path: 'user',
+    select: 'name location phone' // Populate the `store` field, only fetching `name`
+  },
+  {
+    path: 'user',
     select: 'name location phone' // Populate the `user` field
+  },
+  {
+    path: 'assignedDeliveryPerson',
+    select: 'name phone', // فقط الحقول المطلوبة من المندوب
   }
 ]).
   sort({ createdAt: -1 });
@@ -154,7 +316,7 @@ export const getOrders = asyncHandler(async (req, res) => {
   try {
     // Fetch orders and populate `store` and `user` fields
     const orders = await Order.find()
-      .populate('store', 'name location ') // Populate the `store` field, only fetching `name`
+      .populate('store', 'name location phone') // Populate the `store` field, only fetching `name`
       .populate('user', 'name location phone') // Populate the `user` field, fetching `name` and `email`
       .populate({
         path: 'orderItems.product', // Populate the product details for each item

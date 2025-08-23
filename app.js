@@ -13,6 +13,7 @@ import protectedRoutes from './routes/protectedRoute.js';
 import deliveryRoutes from './routes/deliveryRoutes.js';
 import storeRoutes from './routes/storeRoutes.js'
 import locationRoutes from "./routes/locationRoutes.js";
+import deliveryQueueManager from './services/deliveryQueueService.js';
 
 dotenv.config();
 
@@ -52,6 +53,10 @@ app.use('/api/protect', protectedRoutes);
 app.use('/uploads', express.static('uploads'));
 app.use('/api/delivery', deliveryRoutes); 
 app.use("/api/location", locationRoutes);
+
+console.log('✓ Delivery queue system initialized');
+
+
 
 
 export default app;

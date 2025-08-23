@@ -5,7 +5,8 @@ import {
   getOrders,
   cancelOrderIfPending,
   updateOrderStatus,
-  updateOrderIfPending
+  updateOrderIfPending,
+  cancelOrderEnhanced
 } from "../controllers/orderController.js";
 import {protectRoute} from "../middlewares/protectRoute.js";
 import { getGroupedOrders } from "../controllers/orderController.js";
@@ -20,7 +21,7 @@ router.patch("/:id/status", protectRoute, updateOrderStatus);
 router.patch("/:id/update", protectRoute, updateOrderIfPending);
 router.post("/", protectRoute, createOrdersFromCart);
 router.get("/", protectRoute, getMyOrders);
-
+router.patch('/:id/cancel-enhanced', protectRoute, cancelOrderEnhanced);
 export default router;
 
 

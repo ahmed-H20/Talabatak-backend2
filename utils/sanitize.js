@@ -1,11 +1,25 @@
 export const sanitizeUser = (user) => {
   return {
-    id: user._id?.toString?.() || null,
+    _id: user._id?.toString?.() || null,
     name: user.name,
     phone: user.phone,
-    location: user.location,
-    profile_picture: user.profile_picture,
+    email: user.email,
+    location: {
+      coordinates: user.geoLocation?.coordinates || [0, 0],
+      address: user.location
+    },
+    role: user.role,
+    isPhoneVerified: user.isPhoneVerified || false,
+    photo: user.profile_picture,
+    provider: user.provider || 'local',
+    providerId: user.providerId || null,
+    profileComplete: user.profileComplete || false,
     createdAt: normalizeDate(user.createdAt),
+    // Add delivery info if user is delivery person
+    ...(user.role === 'delivery' && {
+      deliveryStatus: user.deliveryStatus,
+      deliveryInfo: user.deliveryInfo
+    })
   };
 };
 

@@ -56,7 +56,9 @@ import {
   toggleAvailability,
   getDeliveryStats,
   rateDelivery,
-  updateDeliveryLocation
+  updateDeliveryLocation,
+  getDeliveryQueueDashboard,
+  toggleAvailabilityEnhanced
 } from '../controllers/deliveryController.js';
 import { protectRoute } from '../middlewares/protectRoute.js';
 import authorizeRoles from '../middlewares/authorizeRoles.js';
@@ -84,4 +86,6 @@ router.patch('/update-location', protectRoute, authorizeRoles('delivery'), updat
 // Customer routes (for rating delivery)
 router.patch('/rate/:orderId', protectRoute, authorizeRoles('user'), rateDelivery);
 
+router.get('/queue-stats', protectRoute, authorizeRoles('admin'), getDeliveryQueueDashboard);
+router.patch('/toggle-availability-enhanced', protectRoute, authorizeRoles('delivery'), toggleAvailabilityEnhanced);
 export default router;
